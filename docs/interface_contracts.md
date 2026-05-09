@@ -29,14 +29,14 @@ Channel layout (dimension 1):
 | 1 | Visibility | m | `1 − clip(V / 30, 0, 1)`  ← **INVERSE** mapping |
 | 2 | CO | ppm | `log1p(CO) / log1p(5000)`, clipped to [0, 1] |
 | 3 | Mask | — | 1.0 = fluid (free) cell, 0.0 = solid (wall) |
-| 4 | Time encoding | — | `sin(2π · t / 300)`, broadcast to grid |
+| 4 | Time encoding | — | `t / 300`, broadcast to grid |
 
 **Convention**: higher value = more dangerous for channels 0–2.
 
-The time encoding uses `sin(2π · t / 300)` (not raw `t / T_end`) to
-provide a smooth periodic signal suitable for ConvLSTM/FNO inductive
-biases. It is broadcast as a constant value across the spatial grid for
-each frame.
+The time encoding is the simulation time normalised by `T_END = 300 s`:
+a linear ramp from 0.0 at `t = 0` to 1.0 at `t = 300 s`. It is broadcast
+as a constant value across the spatial grid for each frame, so every
+cell shares the same time channel value at a given timestep.
 
 ### 1.2 Output tensor
 

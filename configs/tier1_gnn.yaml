@@ -1,0 +1,43 @@
+# Tier 1 GNN configuration (A3T-GCN)
+# See docs/tier1_gnn_design.md §4 for full design rationale.
+version: 1
+
+model:
+  in_channels: 6           # Node features: [is_detected, det_time_norm, type_onehot × 4]
+  out_channels: 32         # A3TGCN2 hidden dim
+  periods: 6               # Sequence length used by A3TGCN2 (= input window)
+                           # Output sequence length is also `periods` via the prediction head.
+                           # 6 × 10 s = 60 s prediction horizon.
+  prediction_horizon: 6    # Mirrors `periods` for now. Kept separate so we can decouple
+                           # input window (T_in) from output horizon (T_out) later if needed.
+
+data:
+  input_window: 6          # T_in (must equal model.periods until A3TGCN2 wrapper supports T_in != T_out)
+  detector_threshold_c: 60.0   # Binary activation threshold (°C) — see tier1_gnn_design.md §3
+  n_nodes: 16              # PLACEHOLDER until configs/building_graph.yaml is finalized
+                           # (depends on PyroSim maze layout — Member A).
+
+training:
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-5
+  batch_size: 4
+  max_epochs: 100
+  early_stopping_patience: 20
+  grad_clip: 1.0
+  loss: mse                # Regression on node-level danger ∈ [0, 1]
+
+augmentation:
+  enabled: true
+  fault_rates: [0.1, 0.2]      # Random detector dropout rates
+  delay_steps: [1, 2]          # Detection-delay augmentation (10 s, 20 s)
+
+wandb:
+  project: "fire-evacuation"
+  group: "tier1_gnn"
+  tags: ["tier1", "gnn", "a3tgcn"]
+
+checkpoints:
+  dirpath: "checkpoints/tier1_gnn"
+  save_top_k: 3
+  monitor: "val/loss"
+  mode: "min"
