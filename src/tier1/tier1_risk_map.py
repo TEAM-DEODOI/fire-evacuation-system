@@ -20,7 +20,7 @@ from typing import List, Optional, Sequence, Tuple, Union
 import numpy as np
 
 from src.risk_map.risk_map_class import RiskMap
-from src.shared.constants import DOMAIN_SIZE_M, DT_SECONDS
+from src.shared.constants import DOMAIN_SIZE_M, DT_SLCF
 
 
 class Tier1RiskMap(RiskMap):
@@ -33,7 +33,7 @@ class Tier1RiskMap(RiskMap):
         start_time: Time (s) corresponding to row 0 of ``node_risks``.
             Defaults to 0.0.
         dt: Step size (s) between rows of ``node_risks``. Defaults to
-            :data:`src.shared.constants.DT_SECONDS` (10.0).
+            :data:`src.shared.constants.DT_SLCF` (10.0).
 
     Raises:
         ValueError: If ``node_risks`` is not 2-D, ``node_positions`` length
@@ -45,7 +45,7 @@ class Tier1RiskMap(RiskMap):
         node_risks: np.ndarray,
         node_positions: Sequence[Tuple[float, float, float]],
         start_time: float = 0.0,
-        dt: float = DT_SECONDS,
+        dt: float = DT_SLCF,
     ) -> None:
         node_risks = np.asarray(node_risks, dtype=np.float32)
         node_positions_arr = np.asarray(node_positions, dtype=np.float32)
@@ -174,7 +174,7 @@ class Tier1RiskMap(RiskMap):
         node_positions: Sequence[Tuple[float, float, float]],
         batch_index: int = 0,
         start_time: float = 0.0,
-        dt: float = DT_SECONDS,
+        dt: float = DT_SLCF,
     ) -> "Tier1RiskMap":
         """Build a :class:`Tier1RiskMap` directly from a GNN forward-pass tensor.
 
@@ -188,7 +188,7 @@ class Tier1RiskMap(RiskMap):
                 (typical inference case is batch size 1).
             start_time: Wall-clock simulation time at the first prediction
                 step. Defaults to 0.0.
-            dt: Step size (s). Defaults to :data:`DT_SECONDS`.
+            dt: Step size (s). Defaults to :data:`DT_SLCF`.
 
         Returns:
             :class:`Tier1RiskMap` populated with the chosen sample.

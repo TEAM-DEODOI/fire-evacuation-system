@@ -2,8 +2,8 @@
 torch==2.0.1
 torchvision==0.15.2
 
-# Neural operator (FNO)
-neuraloperator==0.2.0
+# Neural operator (FNO) — 2.0+ uses lifting_channel_ratio not lifting_channels
+neuraloperator>=2.0.0
 
 # FDS data extraction
 fdsreader==1.8.2
@@ -24,6 +24,7 @@ pyyaml==6.0.1
 pydantic==2.5.3
 h5py==3.10.0
 pandas==2.1.4
+jinja2==3.1.3
 
 # Experiment tracking
 wandb==0.16.2

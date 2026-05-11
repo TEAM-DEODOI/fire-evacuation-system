@@ -1,34 +1,243 @@
-# Building geometry configuration
-# Single-floor building: 30 m x 20 m x 3 m — DO NOT CHANGE.
-
-domain:
-  x_m: 30.0          # Building length (X axis) in meters
-  y_m: 20.0          # Building width  (Y axis) in meters
-  z_m: 3.0           # Ceiling height  (Z axis) in meters
-
-grid:
-  nx: 60             # Cells along X  (= 30 / 0.5)
-  ny: 40             # Cells along Y  (= 20 / 0.5)
-  nz: 6              # Cells along Z  (= 3.0 / 0.5)
-  cell_size_m: 0.5   # FIXED resolution — never change to 0.2 m
-
-# Exit locations in world coordinates (meters).
-# Z=0.0 means ground-floor door.
-exits:
-  - name: "main_exit"
-    x: 30.0
-    y: 10.0
-    z: 0.0
-  - name: "side_exit"
-    x: 0.0
-    y: 20.0
-    z: 0.0
-
-# Ventilation: BOTH doors are open in ALL scenarios.
-# Ventilation variation is out of scope for this project.
-ventilation:
-  both_doors_open: true
-
-# Interior obstacles (walls, partitions) — populated per FDS scenario.
-# Each entry: {name: str, x_min, x_max, y_min, y_max, z_min, z_max} in meters.
-obstacles: []
+version: 1
+nodes:
+- id: zone_a_west
+  pos:
+  - 3.0
+  - 13.0
+  - 1.5
+  type: room
+  is_exit: false
+  has_detector: true
+- id: zone_a_center
+  pos:
+  - 8.0
+  - 14.0
+  - 1.5
+  type: room
+  is_exit: false
+  has_detector: true
+- id: zone_b_west
+  pos:
+  - 4.0
+  - 4.0
+  - 1.5
+  type: room
+  is_exit: false
+  has_detector: true
+- id: zone_b_center
+  pos:
+  - 10.0
+  - 3.0
+  - 1.5
+  type: room
+  is_exit: false
+  has_detector: true
+- id: zone_b_east
+  pos:
+  - 18.0
+  - 3.0
+  - 1.5
+  type: room
+  is_exit: false
+  has_detector: true
+- id: zone_c_west
+  pos:
+  - 15.0
+  - 16.0
+  - 1.5
+  type: room
+  is_exit: false
+  has_detector: true
+- id: zone_c_center
+  pos:
+  - 22.0
+  - 16.0
+  - 1.5
+  type: room
+  is_exit: false
+  has_detector: true
+- id: zone_c_east
+  pos:
+  - 28.0
+  - 16.0
+  - 1.5
+  type: room
+  is_exit: false
+  has_detector: true
+- id: zone_d_west
+  pos:
+  - 24.0
+  - 5.0
+  - 1.5
+  type: room
+  is_exit: false
+  has_detector: true
+- id: zone_d_center
+  pos:
+  - 28.0
+  - 5.0
+  - 1.5
+  type: room
+  is_exit: false
+  has_detector: true
+- id: hall_n
+  pos:
+  - 15.0
+  - 12.0
+  - 1.5
+  type: corridor
+  is_exit: false
+  has_detector: true
+- id: hall_s
+  pos:
+  - 15.0
+  - 7.0
+  - 1.5
+  type: corridor
+  is_exit: false
+  has_detector: true
+- id: hall_e
+  pos:
+  - 20.0
+  - 9.0
+  - 1.5
+  type: corridor
+  is_exit: false
+  has_detector: true
+- id: hall_w
+  pos:
+  - 10.0
+  - 9.0
+  - 1.5
+  type: corridor
+  is_exit: false
+  has_detector: true
+- id: int_north
+  pos:
+  - 12.0
+  - 14.0
+  - 1.5
+  type: intersection
+  is_exit: false
+  has_detector: true
+- id: int_south
+  pos:
+  - 15.0
+  - 5.0
+  - 1.5
+  type: intersection
+  is_exit: false
+  has_detector: true
+- id: exit_west
+  pos:
+  - 0.0
+  - 5.0
+  - 1.5
+  type: exit
+  is_exit: true
+  has_detector: false
+- id: exit_north
+  pos:
+  - 8.0
+  - 18.0
+  - 1.5
+  type: exit
+  is_exit: true
+  has_detector: false
+- id: exit_east
+  pos:
+  - 30.0
+  - 13.0
+  - 1.5
+  type: exit
+  is_exit: true
+  has_detector: false
+edges:
+- source: zone_a_west
+  target: zone_a_center
+  length: 5.0990195135927845
+  width: 1.5
+- source: zone_a_center
+  target: int_north
+  length: 4.0
+  width: 1.5
+- source: zone_a_center
+  target: exit_north
+  length: 4.0
+  width: 1.5
+- source: zone_b_west
+  target: exit_west
+  length: 4.123105625617661
+  width: 1.5
+- source: zone_b_west
+  target: zone_b_center
+  length: 6.082762530298219
+  width: 1.5
+- source: zone_b_center
+  target: zone_b_east
+  length: 8.0
+  width: 1.5
+- source: zone_b_east
+  target: int_south
+  length: 3.605551275463989
+  width: 1.5
+- source: zone_c_west
+  target: int_north
+  length: 3.605551275463989
+  width: 1.5
+- source: zone_c_west
+  target: zone_c_center
+  length: 7.0
+  width: 1.5
+- source: zone_c_center
+  target: zone_c_east
+  length: 6.0
+  width: 1.5
+- source: zone_c_east
+  target: exit_east
+  length: 3.605551275463989
+  width: 1.5
+- source: zone_d_west
+  target: int_south
+  length: 9.0
+  width: 1.5
+- source: zone_d_west
+  target: zone_d_center
+  length: 4.0
+  width: 1.5
+- source: zone_d_west
+  target: hall_e
+  length: 5.656854249492381
+  width: 1.5
+- source: zone_d_center
+  target: exit_east
+  length: 8.246211251235321
+  width: 1.5
+- source: hall_n
+  target: hall_e
+  length: 5.830951894845301
+  width: 1.5
+- source: hall_n
+  target: hall_w
+  length: 5.830951894845301
+  width: 1.5
+- source: hall_n
+  target: int_north
+  length: 3.605551275463989
+  width: 1.5
+- source: hall_s
+  target: int_south
+  length: 2.0
+  width: 1.5
+- source: hall_s
+  target: hall_e
+  length: 5.385164807134504
+  width: 1.5
+- source: hall_s
+  target: hall_w
+  length: 5.385164807134504
+  width: 1.5
+- source: hall_w
+  target: int_north
+  length: 5.385164807134504
+  width: 1.5

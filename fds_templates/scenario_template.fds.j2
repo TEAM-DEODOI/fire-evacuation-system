@@ -1,0 +1,37 @@
+&HEAD CHID='{{ scenario_id }}' /
+
+&MESH ID='Mesh01', IJK=100,80,8, XB=-10.0,40.0,-10.0,30.0,0.0,4.0 /
+
+&TIME T_END=300.0 /
+&DUMP DT_RESTART=300.0, DT_SLCF=10.0 /
+
+&REAC ID='SFPE WOOD_OAK',
+      FUEL='REAC_FUEL',
+      SOOT_YIELD=0.015,
+      CO_YIELD=0.004 /
+
+! 건물 STL (Member A가 PyroSim에서 import할 것)
+! 여기서는 placeholder — PyroSim export 결과의 GEOM/OBST 라인이 들어옴.
+! 이 스크립트는 .fds 골격만 생성. PyroSim에서 STL 정의 부분 병합 필요.
+! &GEOM ID='Building', BINARY_FILE='SCIENCE_HALL_v2.stl', SURF_ID='WALL' /
+
+! 3개 SLCF (Z=3.0 정확히 — L-009 회피)
+! VECTOR=.TRUE. 절대 금지 (L-001)
+&SLCF QUANTITY='TEMPERATURE', CELL_CENTERED=.TRUE.,
+      ID='Temperature', XB=0.0,30.0, 0.0,20.0, 0.0,3.0 /
+&SLCF QUANTITY='SOOT VISIBILITY', CELL_CENTERED=.TRUE.,
+      ID='Visibility', XB=0.0,30.0, 0.0,20.0, 0.0,3.0 /
+&SLCF QUANTITY='VOLUME FRACTION', SPEC_ID='CARBON MONOXIDE',
+      CELL_CENTERED=.TRUE., ID='CO',
+      XB=0.0,30.0, 0.0,20.0, 0.0,3.0 /
+
+! 화재원 — 1m × 1m
+&SURF ID='BURNER', HRRPUA={{ hrrpua }}, COLOR='RED' /
+&OBST XB={{ fire_x1 }},{{ fire_x2 }}, {{ fire_y1 }},{{ fire_y2 }}, 0.0,1.0,
+      SURF_ID='BURNER', ID='Fire_Source' /
+
+! 양쪽 끝 환기 (모든 시나리오 공통, D-001)
+&VENT MB='YMIN', SURF_ID='OPEN' /
+&VENT MB='YMAX', SURF_ID='OPEN' /
+
+&TAIL /

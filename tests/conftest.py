@@ -12,7 +12,7 @@ from src.shared.constants import (
     GRID_SHAPE,
     N_INPUT_CHANNELS,
     N_OUTPUT_CHANNELS,
-    TIME_STEPS,
+    N_TIMESTEPS,
 )
 
 
@@ -80,11 +80,11 @@ def fake_scenario() -> dict[str, np.ndarray]:
 
     Returns:
         Dict with keys "temperature", "visibility", "co_ppm",
-        each of shape (TIME_STEPS, 60, 40, 6).
+        each of shape (N_TIMESTEPS, 60, 40, 6).
         Values are in physical units (°C, m, ppm).
     """
     rng = np.random.default_rng(4)
-    shape = (TIME_STEPS, *GRID_SHAPE)
+    shape = (N_TIMESTEPS, *GRID_SHAPE)
     return {
         "temperature": rng.uniform(20.0, 800.0, shape).astype(np.float32),
         "visibility": rng.uniform(0.0, 30.0, shape).astype(np.float32),

@@ -32,7 +32,7 @@ import h5py
 import numpy as np
 
 from src.shared.constants import (
-    DT_SECONDS,
+    DT_SLCF,
     GRID_SHAPE,
     N_INPUT_CHANNELS,
     N_OUTPUT_CHANNELS,
@@ -40,8 +40,8 @@ from src.shared.constants import (
     N_SCENARIOS_TOTAL,
     N_SCENARIOS_TRAIN,
     N_SCENARIOS_VAL,
+    N_TIMESTEPS,
     T_END_SECONDS,
-    TIME_STEPS,
 )
 
 
@@ -90,13 +90,13 @@ def _build_scenario(
     nx, ny, nz = GRID_SHAPE
 
     # Input: 5 channels [T, V, CO, mask, time_enc]
-    inp = rng.uniform(0.0, 1.0, size=(TIME_STEPS, N_INPUT_CHANNELS, nx, ny, nz)).astype(np.float32)
+    inp = rng.uniform(0.0, 1.0, size=(N_TIMESTEPS, N_INPUT_CHANNELS, nx, ny, nz)).astype(np.float32)
 
     # Channel 3 = building mask (constant across time).
     inp[:, 3, :, :, :] = mask
 
     # Channel 4 = linear time encoding t/T_END (broadcast spatially).
-    times = (np.arange(TIME_STEPS, dtype=np.float32) * DT_SECONDS) / T_END_SECONDS
+    times = (np.arange(N_TIMESTEPS, dtype=np.float32) * DT_SLCF) / T_END_SECONDS
     inp[:, 4, :, :, :] = times[:, None, None, None]
 
     # Target: 3 channels [T, V, CO]
@@ -107,7 +107,7 @@ def _build_scenario(
         target += 0.01 * rng.standard_normal(target.shape).astype(np.float32)
         np.clip(target, 0.0, 1.0, out=target)
     else:
-        target = rng.uniform(0.0, 1.0, size=(TIME_STEPS, N_OUTPUT_CHANNELS, nx, ny, nz)).astype(np.float32)
+        target = rng.uniform(0.0, 1.0, size=(N_TIMESTEPS, N_OUTPUT_CHANNELS, nx, ny, nz)).astype(np.float32)
 
     return inp, target
 

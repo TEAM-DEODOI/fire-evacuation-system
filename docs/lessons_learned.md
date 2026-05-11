@@ -368,6 +368,46 @@ and Week 10 when DynamicRiskMap is built.
 
 ---
 
+## L-012: PyroSim cell-centered SLCF is incompatible with fdsreader
+
+**Symptom**:
+
+```
+ValueError: could not broadcast input array from shape (61,41,8)
+into shape (61,41,7)
+```
+
+The error appears when ``fdsreader.Slice.to_global(return_coordinates=True)``
+is called on a cell-centered SLCF, even when the FDS input deck sets
+``XB=...,0.0,3.0/`` (Z=3.0). This is *distinct* from L-009 — fixing the
+``.fds`` deck with ``scripts/fix_pyrosim_fds.py`` does not eliminate the
+problem when the source of the slice is PyroSim.
+
+**Root cause**:
+
+PyroSim writes cell-centered SLCF outputs as **node-based** ``(62, 42, 8)``
+arrays inside the ``.sf`` file and additionally stretches the Z axis to
+3.5 m (so cell shape becomes ``(61, 41, 7)`` rather than the canonical
+``(60, 40, 6)``). ``fdsreader`` then expects a ``(61, 41, 7)`` payload
+but receives ``(61, 41, 8)`` after its own cell-centering pass,
+producing the broadcast error.
+
+**Fix**:
+
+Bypass ``fdsreader``. ``src/data_pipeline/fds_extractor.py`` parses the
+``.sf`` FORTRAN-unformatted records directly, applies 8-vertex averaging
+to convert node → cell-centered, then crops the result to the
+``(60, 40, 6)`` SLCF region per D-015. The same module also converts
+CO from FDS ``VOLUME FRACTION`` (mol/mol) to ppm and aligns the time
+axis to the canonical 31 frames.
+
+**Status**: Fixed by custom parser. Applies to all 30 scenarios. No
+``fdsreader`` import remains in ``fds_extractor.py``; the dependency
+stays in ``requirements.txt`` only for any future, non-cell-centered
+diagnostic use.
+
+---
+
 ## How to Add a Lesson
 
 When you encounter and fix a bug worth remembering:

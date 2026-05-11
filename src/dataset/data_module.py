@@ -85,7 +85,7 @@ if __name__ == "__main__":
         GRID_SHAPE,
         N_INPUT_CHANNELS,
         N_OUTPUT_CHANNELS,
-        TIME_STEPS,
+        N_TIMESTEPS,
     )
 
     print("=" * 60)
@@ -103,11 +103,11 @@ if __name__ == "__main__":
                 grp = f.create_group(f"scenario_{sid:03d}")
                 grp.create_dataset(
                     "input",
-                    data=rng.uniform(0, 1, size=(TIME_STEPS, N_INPUT_CHANNELS, nx, ny, nz)).astype(np.float32),
+                    data=rng.uniform(0, 1, size=(N_TIMESTEPS, N_INPUT_CHANNELS, nx, ny, nz)).astype(np.float32),
                 )
                 grp.create_dataset(
                     "target",
-                    data=rng.uniform(0, 1, size=(TIME_STEPS, N_OUTPUT_CHANNELS, nx, ny, nz)).astype(np.float32),
+                    data=rng.uniform(0, 1, size=(N_TIMESTEPS, N_OUTPUT_CHANNELS, nx, ny, nz)).astype(np.float32),
                 )
             f.create_dataset("mask", data=np.ones(GRID_SHAPE, dtype=np.float32))
             meta = f.create_group("metadata")

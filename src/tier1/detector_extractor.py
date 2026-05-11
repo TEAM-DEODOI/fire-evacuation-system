@@ -21,10 +21,10 @@ import numpy as np
 
 from src.shared.constants import (
     CELL_SIZE_M,
-    DT_SECONDS,
+    DT_SLCF,
     GRID_SHAPE,
+    N_TIMESTEPS,
     TENABILITY,
-    TIME_STEPS,
 )
 
 
@@ -73,7 +73,7 @@ def extract_detector_events_from_slices(
     behaviour mirrors physical heat detectors).
 
     Args:
-        grid: Temperature SLCF, shape ``(TIME_STEPS, nx, ny, nz)`` =
+        grid: Temperature SLCF, shape ``(N_TIMESTEPS, nx, ny, nz)`` =
               ``(31, 60, 40, 6)``, units °C.
         detector_positions: List of ``(x, y, z)`` world metres, length
               ``N_detectors``.
@@ -85,7 +85,7 @@ def extract_detector_events_from_slices(
         Dict with two keys:
 
         * ``"binary_sequence"`` — ``np.ndarray`` of shape
-          ``(TIME_STEPS, N_detectors)`` and dtype ``float32``.
+          ``(N_TIMESTEPS, N_detectors)`` and dtype ``float32``.
           ``1.0`` once the detector has triggered (and thereafter), ``0.0``
           before that.
         * ``"activation_times"`` — ``list[float | None]`` of length
@@ -97,7 +97,7 @@ def extract_detector_events_from_slices(
         ValueError: If ``grid`` does not have the expected shape, or if
             ``detector_positions`` is empty.
     """
-    expected = (TIME_STEPS, *GRID_SHAPE)
+    expected = (N_TIMESTEPS, *GRID_SHAPE)
     if grid.shape != expected:
         raise ValueError(
             f"grid shape {grid.shape} != expected {expected}"
@@ -106,18 +106,18 @@ def extract_detector_events_from_slices(
         raise ValueError("detector_positions must contain at least one detector")
 
     n_det = len(detector_positions)
-    binary_seq = np.zeros((TIME_STEPS, n_det), dtype=np.float32)
+    binary_seq = np.zeros((N_TIMESTEPS, n_det), dtype=np.float32)
     activation_times: List[Optional[float]] = [None] * n_det
 
     for det_id, pos in enumerate(detector_positions):
         ix, iy, iz = _world_to_cell_clamped(pos)
-        cell_temp_series = grid[:, ix, iy, iz]  # shape (TIME_STEPS,)
+        cell_temp_series = grid[:, ix, iy, iz]  # shape (N_TIMESTEPS,)
 
         # First index where temperature exceeds threshold; -1 if never.
         triggered = np.flatnonzero(cell_temp_series > threshold_celsius)
         if triggered.size > 0:
             t_idx = int(triggered[0])
-            activation_times[det_id] = float(t_idx * DT_SECONDS)
+            activation_times[det_id] = float(t_idx * DT_SLCF)
             binary_seq[t_idx:, det_id] = 1.0
 
     return {
@@ -139,7 +139,7 @@ def augment_binary_sequence(
     scenarios → 150 training samples.
 
     Args:
-        binary_seq: Original sequence, shape ``(TIME_STEPS, N_detectors)``,
+        binary_seq: Original sequence, shape ``(N_TIMESTEPS, N_detectors)``,
                     values ∈ {0.0, 1.0}.
         fault_rates: Fraction of detectors to mute (force to 0 across all
                      timesteps) per fault-injection variant.
@@ -204,7 +204,7 @@ if __name__ == "__main__":
     fire_xyz = (15.0, 10.0, 1.5)
     fire_ix, fire_iy, fire_iz = _world_to_cell_clamped(fire_xyz)
 
-    grid = np.full((TIME_STEPS, nx, ny, nz), 22.0, dtype=np.float32)  # 22 °C ambient
+    grid = np.full((N_TIMESTEPS, nx, ny, nz), 22.0, dtype=np.float32)  # 22 °C ambient
     xx, yy, zz = np.meshgrid(
         np.arange(nx), np.arange(ny), np.arange(nz), indexing="ij"
     )
@@ -212,8 +212,8 @@ if __name__ == "__main__":
         (xx - fire_ix) ** 2 + (yy - fire_iy) ** 2 + (zz - fire_iz) ** 2
     )
     # Fire ramps up linearly with time and decays with distance.
-    for t_idx in range(TIME_STEPS):
-        intensity = 1500.0 * (t_idx / (TIME_STEPS - 1))  # peak 1500 °C at t=300s
+    for t_idx in range(N_TIMESTEPS):
+        intensity = 1500.0 * (t_idx / (N_TIMESTEPS - 1))  # peak 1500 °C at t=300s
         grid[t_idx] = 22.0 + intensity * np.exp(-cell_dist / 6.0)
 
     # Detectors: one at fire, one mid-range (~7 m away), one far (~20 m away).
@@ -229,7 +229,7 @@ if __name__ == "__main__":
     bs = out["binary_sequence"]
     at = out["activation_times"]
 
-    if bs.shape != (TIME_STEPS, 3):
+    if bs.shape != (N_TIMESTEPS, 3):
         errors.append(f"binary_sequence shape {bs.shape} != (31, 3)")
     if bs.dtype != np.float32:
         errors.append(f"binary_sequence dtype {bs.dtype} != float32")
@@ -244,7 +244,7 @@ if __name__ == "__main__":
         seq = bs[:, det_id]
         if at[det_id] is None:
             continue
-        first_on = int(at[det_id] / DT_SECONDS)
+        first_on = int(at[det_id] / DT_SLCF)
         # Before activation must be all zero, after must be all one.
         if seq[:first_on].any():
             errors.append(f"detector {det_id}: non-zero before activation")

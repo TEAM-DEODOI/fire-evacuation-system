@@ -244,6 +244,40 @@ on quality of T predictions; tenability is most "downstream").
 
 ---
 
+## D-022: H6 가설 메트릭 확장 (FED 단독 → 4개 메트릭 조합)
+
+**Decision**:
+H6 가설 (동적 vs 정적 경로 알고리즘 비교) 검증 메트릭을 누적 FED 단독에서
+4개 메트릭 조합으로 확장. FED는 보조 지표로 유지.
+
+| 메트릭 | 정의 | H6 가시성 |
+|---|---|---|
+| peak_danger | 경로상 최대 위험도 [0, 1] | ★★★★★ |
+| time_in_hazard_s | 위험 영역(>0.5) 체류 시간 (초) | ★★★★★ |
+| aset_margin_s | ASET 안전 여유 시간 (초) | ★★★★★ |
+| fed_final | 누적 FED (보조) | ★★☆☆☆ |
+
+**Rationale**:
+- 1500 kW 화재, 300초 시뮬레이션에서 누적 FED 최대값 = 0.043 (임계값 0.3 미달)
+- 시뮬레이션 시간 (300초)이 FED 누적 시간 척도 (30분~1시간) 대비 짧음
+- 화재 크기 증가는 비현실적 + 30건 재시뮬레이션 비용 큼
+- Peak Danger / Time-in-Hazard는 시뮬레이션 시간 길이와 무관
+- 동적 알고리즘의 본질적 가치 (미래 위험 회피)를 더 직접 측정
+
+**Discovered**:
+2025년 first_sim 위험지도 분석 시 발견. validate_risk_map.py 출력에서
+3개 관측점 모두 FED < 0.043 < 0.3 (임계값).
+
+**Implementation**:
+- 신규 모듈: src/risk_map/path_metrics.py
+- 핵심 클래스: PathSafetyMetrics (dataclass)
+- 통합 함수: evaluate_path_safety()
+- 기존 D-008 (FED simplified), D-009 (FED threshold 0.3) 변경 없음
+
+**Status**: Implemented. EXP-PATH-001 (Week 12)에서 활용 예정.
+
+---
+
 ## How to Add a Decision
 
 When making a major scope or interface decision:

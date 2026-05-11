@@ -1,31 +1,33 @@
 """Shared constants, normalization, and geometry utilities."""
 from src.shared.constants import (
-    GRID_SHAPE,
-    DOMAIN_SIZE_M,
     CELL_SIZE_M,
-    TIME_STEPS,
-    DT_SECONDS,
-    T_END_SECONDS,
+    DOMAIN_SIZE_M,
+    DT_SLCF,
+    GRID_SHAPE,
+    N_CELLS,
     N_INPUT_CHANNELS,
     N_OUTPUT_CHANNELS,
+    N_TIMESTEPS,
+    T_END_SECONDS,
     TENABILITY,
-    N_CELLS,
 )
 from src.shared.normalization import (
-    normalize_temperature,
+    compute_time_encoding,
+    decode_time_encoding,
+    denormalize_co,
     denormalize_temperature,
-    normalize_visibility,
     denormalize_visibility,
     normalize_co,
-    denormalize_co,
+    normalize_temperature,
+    normalize_visibility,
 )
 
 __all__ = [
     "GRID_SHAPE",
     "DOMAIN_SIZE_M",
     "CELL_SIZE_M",
-    "TIME_STEPS",
-    "DT_SECONDS",
+    "N_TIMESTEPS",
+    "DT_SLCF",
     "T_END_SECONDS",
     "N_INPUT_CHANNELS",
     "N_OUTPUT_CHANNELS",
@@ -37,4 +39,6 @@ __all__ = [
     "denormalize_visibility",
     "normalize_co",
     "denormalize_co",
+    "compute_time_encoding",
+    "decode_time_encoding",
 ]
