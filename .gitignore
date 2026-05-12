@@ -114,7 +114,9 @@ data/processed/*.npz
 *.safetensors
 
 # ─────────────────────────────────────────────────────────────────────────
-# Model checkpoints (371 MB; regenerable via training)
+# Model checkpoints
+# Whitelist: 핵심 best.pt (ConvLSTM 1.4 MB + FNO no-PI 41 MB + FNO PI 41 MB)
+# Block:     final.pt, *_test/, *_wandb_test/ (재생성 가능 / 노이즈)
 # ─────────────────────────────────────────────────────────────────────────
 checkpoints/**/*.pt
 checkpoints/**/*.pth
@@ -123,6 +125,9 @@ checkpoints/**/best.pt
 checkpoints/**/final.pt
 !checkpoints/.gitkeep
 !checkpoints/**/.gitkeep
+!checkpoints/conv_lstm/best.pt
+!checkpoints/fno_no_pi/best.pt
+!checkpoints/fno_pi/best.pt
 
 # ─────────────────────────────────────────────────────────────────────────
 # Weights & Biases run logs (offline runs, debug logs)
@@ -145,9 +150,11 @@ figures/scenario_*/
 !figures/*.pdf
 !figures/*.svg
 
-# Large animations should NOT be committed even at root
+# Large animations: nested subdirs 까지 차단 (eval_T01_T05/sim_*/*.gif 포함)
 figures/*.gif
 figures/*.mp4
+figures/**/*.gif
+figures/**/*.mp4
 
 # ─────────────────────────────────────────────────────────────────────────
 # Experiment results & logs
