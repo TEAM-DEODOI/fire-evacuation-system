@@ -40,7 +40,7 @@ Path safety validation
 (EXP-PATH-001: cumulative FED reduction)
     ↓
 PyBullet integrated demo (Week 12)
-(Single Crazyflie drone follows planned path)
+(Drone swarm guides evacuees along planned paths — three scenarios compared)
 ```
 
 ---
@@ -49,20 +49,21 @@ PyBullet integrated demo (Week 12)
 
 Every line of code in this project exists to validate one of these hypotheses.
 
-| ID | Hypothesis | Target |
-|----|-----------|--------|
-| H1 | **Speed**: PI-FNO inference is ≥1000× faster than FDS | <50ms vs FDS minutes |
-| H2 | **Accuracy**: Relative L2 ≤ 15% on training scenarios | EXP-FIRE-001 |
-| H3 | **Generalization**: PI-FNO outperforms ConvLSTM on OOD scenarios | EXP-FIRE-001 OOD |
-| H4 | **Practicality**: Risk map FNR <10% (false negative rate) | EXP-RISK-001 |
-| H5 | **Risk map fidelity**: PI-FNO risk map IoU ≥0.7 vs FDS ground truth | EXP-RISK-001 |
-| H6 | **Path safety**: Dynamic A* reduces cumulative FED ≥30% vs static | EXP-PATH-001 |
+| ID | Hypothesis | Target | Experiment |
+|----|-----------|--------|------------|
+| H1 | **Speed**: PI-FNO inference is ≥1000× faster than FDS | <50ms vs FDS minutes | EXP-FIRE-001 |
+| H2 | **Accuracy**: Relative L2 ≤ 15% on training scenarios | Rel L2 < 15% | EXP-FIRE-001 |
+| H3 | **Generalization**: PI-FNO outperforms ConvLSTM on OOD scenarios | OOD Rel L2 lower | EXP-FIRE-001 |
+| H4 | **Risk map quality**: Risk map FNR < 10% (no false safe predictions) | FNR < 10% | EXP-RISK-001 |
+| H5 | **Risk map fidelity**: PI-FNO risk map IoU ≥ 0.7 vs FDS ground truth | IoU ≥ 0.7 @ 0.7 threshold | EXP-RISK-001 |
+| H6 | **System effectiveness**: Dynamic drone-swarm guidance reduces cumulative FED ≥ 30% vs fixed sign baseline | FED reduction ≥ 30% | EXP-PATH-001 |
 
 **Presentation emphasis order**: H1 → H6 → H4 → H2 → H5 → H3.
 
-H6 is the strongest card: static-vs-dynamic FED comparison is intuitive,
-visually striking, and immediately resonates with fire safety engineering
-judges.
+H6 is the strongest card: fixed-sign vs drone-swarm FED comparison is
+intuitive, visually striking, and immediately resonates with fire safety
+engineering judges. H4/H5 provide the scientific grounding that the risk
+map driving H6 is trustworthy.
 
 ---
 
@@ -147,7 +148,7 @@ choices, or scientific judgment calls — those go to humans.
 | FDS data | `fdsreader` |
 | Graph / routing | `NetworkX` |
 | Interpolation | `scipy.interpolate.RegularGridInterpolator` |
-| Drone sim (Wk 12) | `pybullet`, `gym-pybullet-drones` |
+| Drone sim (Wk 12) | `pybullet`, `gym-pybullet-drones` (drone swarm, multiple agents) |
 | Experiment tracking | Weights & Biases |
 | Testing | `pytest` |
 
@@ -236,11 +237,13 @@ Each was explicitly excluded for scope or feasibility reasons (see
 - Multi-floor buildings (single floor only)
 - Real-time CFD (FDS pre-computed only)
 - Mesh resolution other than 0.5 m
-- Drone swarms (single Crazyflie sim)
 - Real fire experiments (simulation only)
 - Ventilation variation (all scenarios: both doors open)
 - HCN, irritant gas, or radiant heat FED (CO only)
-- Real human behaviour modelling (idealised evacuees)
+- **Real human behaviour modelling** — PersonAgent uses a simplified movement
+  model only: constant speed (1.2 m/s), wall collision avoidance via PyBullet
+  contact, status transitions (alive → evacuated / dead). No panic speed
+  increase, no social force, no crowd density effects.
 - Replacing existing fire safety systems (we are auxiliary)
 
 ---
@@ -379,7 +382,30 @@ clear table for the final paper and presentation.
 |------------|----------|--------|
 | **EXP-FIRE-001** | ConvLSTM vs FNO no-PI vs FNO full | RMSE/SSIM table, OOD generalization |
 | **EXP-RISK-001** | FDS ground truth vs PI-FNO predicted risk maps | IoU at 0.3/0.5/0.7, FNR, FPR |
-| **EXP-PATH-001** | Dijkstra vs Static avoidance vs Dynamic predictive | Cumulative FED, reach time |
+| **EXP-PATH-001** | Three evacuation scenarios compared on cumulative FED, success rate, mean evacuation time | FED reduction, casualty rate |
+
+### EXP-PATH-001 — Three Scenarios
+
+All three scenarios share the same PyBullet building, the same 20 person
+agents (simplified movement model — see NOT DO section), and the same
+DynamicRiskMap interface.  The only differences are the guidance system and
+the risk-map source.
+
+| Scenario | Guidance system | RiskMap source | H6 role |
+|----------|----------------|---------------|---------|
+| **S1 — Fixed sign baseline** | Static guidance signs pre-placed in building; persons individually detect danger (query RiskMap) and navigate toward nearest non-hazardous sign | FDS | Baseline |
+| **S2 — FDS drone swarm** | Drone swarm (gym-pybullet-drones, Boids/APF) detects isolated persons and guides them via dynamic waypoints computed by weighted A* | FDS | Experimental |
+| **S3 — PI-FNO drone swarm** | Same drone swarm, same A* | PI-FNO | Experimental |
+
+Comparing S1 vs S2 validates H6 (system effectiveness).
+Comparing S2 vs S3 validates H5 (risk map fidelity translates to guidance quality).
+
+**Metrics collected per scenario** (by `src/evaluation/metrics.py`):
+- `evacuation_success_rate` — fraction evacuated within 300 s
+- `mean_evacuation_time` — mean time to exit for evacuated persons (s)
+- `danger_zone_exposure_time` — mean cumulative seconds in risk ≥ 0.5 zone
+- `casualty_rate` — fraction with status `dead`
+- `cumulative_FED` — mean cumulative FED per person (H6 primary metric)
 
 Plus three **ablations** (Week 11):
 - PI loss components contribution
@@ -441,7 +467,7 @@ src/training/      — training loops, callbacks (Week 7-9)
 src/evaluation/    — metrics, model comparison (Week 9-10)
 src/risk_map/      — risk map conversion, ASET, FED, predictive (Week 10)
 src/path_planning/ — graph, A*, evacuation simulator (Week 11)
-src/integration/   — PyBullet demo (Week 12)
+src/integration/   — PyBullet demo: env_setup, person agents, drone swarm, scenarios, metrics (Week 12)
 src/visualization/ — plots, animations (Week 13)
 configs/           — YAML hyperparameters per module
 experiments/       — executable scripts (exp_*, ablation_*)
