@@ -474,15 +474,40 @@ figures/           — paper/slide figures
 
 ---
 
-## Current Project State (Update as You Progress)
+## Current Project State (2026-05-12)
 
-**Last data validation**: `0507_v1` simulation has SLCF Z=3.5 issue.
-Awaiting re-simulation with SLCF Z=3.0 fix (see L-009).
+> **Detailed handoff**: `docs/handoff_2026_05_12.md` — read first when
+> resuming. Holds full decision log, evaluation numbers, file index, and
+> the priority queue.
 
-**Next milestone**: Validate fdsreader on corrected single-scenario data,
-then implement `src/data_pipeline/fds_extractor.py` (Week 6 work).
+**Completed**:
+- Tier 0/1/2 (foundation, simulation tools, data extraction) — all ✅
+- Data pipeline: 33-scenario `data/processed/dataset.h5` (D-024 all-train,
+  990 train pairs, val/ood empty pending Member A's extra sims)
+- Risk Map module (tenability / FED / ASET / StaticRiskMap / converter /
+  path_metrics) with D-022 4-metric H6 evaluation
+- ConvLSTM baseline trained: 100 epoch, train loss 0.001, **risk-map IoU
+  0.85 / FNR 9.9% (✅ H4/H5)**, inference 1664× faster than FDS (✅ H1)
+- PI-FNO code complete and ready to launch (no PI + full PI curriculum)
+- wandb integration on both training entry points
+- Risk-map comparison artefacts (FDS vs ConvLSTM) generated at
+  `figures/risk_compare/scenario_{014,011}/`
 
-**Active blockers**: None — STL fix and SLCF fix can both proceed in parallel.
+**Recent decisions**:
+- D-022: H6 metrics = peak_danger / time_in_hazard / aset_margin / fed_final
+- D-023: 30 → 33 scenarios, 4 → 3 HRR levels (500/1000/1500 kW)
+- D-024: all 33 → train; val/ood reserved for separate simulations
+
+**Next priority**:
+1. ★★★ FNO no-PI + full-PI training on RunPod A100 (~30 min, ~$0.40)
+2. ★★ Path planning (Week 11) — edge_weights / planners / evacuation_sim
+3. ★ val/ood simulations from Member A (1500kW H, 2000kW, new locs)
+
+**Active blockers**:
+- `val`/`ood` simulations absent → H3 (FNO > ConvLSTM on OOD) cannot be
+  measured. All other hypotheses (H1, H4, H5, H6-premise) already on track.
+- GPU access — CPU works but 2 hrs/model. RunPod migration plan
+  documented in handoff §7.
 
 ---
 

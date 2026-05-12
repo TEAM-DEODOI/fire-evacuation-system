@@ -1,71 +1,170 @@
+# ─────────────────────────────────────────────────────────────────────────
 # Python
+# ─────────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-*.egg
-*.egg-info/
-dist/
-build/
-.eggs/
 .Python
-pip-wheel-metadata/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-htmlcov/
-.coverage
-coverage.xml
 
 # Virtual environments
 .venv/
 venv/
 env/
 ENV/
+.python-version
 
-# PyTorch / model checkpoints
-checkpoints/*.pt
-checkpoints/*.pth
-checkpoints/*.ckpt
-*.safetensors
+# Packaging / build
+build/
+dist/
+*.egg
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
 
-# Data files (large binaries)
-data/raw/*.fds
-data/raw/*.smv
-data/raw/*.sf
-data/raw/*.bf
-data/raw/*.q
-data/raw/*.s3d
+# Linters & test caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.hypothesis/
+
+# ─────────────────────────────────────────────────────────────────────────
+# Jupyter
+# ─────────────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+notebooks/*.ipynb
+
+# ─────────────────────────────────────────────────────────────────────────
+# IDE / OS / Editor
+# ─────────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
+
+# ─────────────────────────────────────────────────────────────────────────
+# Secrets / local config
+# ─────────────────────────────────────────────────────────────────────────
+.env
+.env.local
+*.local.*
+*.pem
+*.key
+api_keys.txt
+
+# ─────────────────────────────────────────────────────────────────────────
+# Raw FDS simulation data (5.7 GB across 33 scenarios)
+# Regeneration: PyroSim → fix_pyrosim_fds → FDS execution
+# ─────────────────────────────────────────────────────────────────────────
+data/raw/s_*/
+data/raw/sim_*/
+data/raw/first_sim/
+data/raw/**/*.fds
+data/raw/**/*.fds.bak
+data/raw/**/*.smv
+data/raw/**/*.smvv
+data/raw/**/*.sf
+data/raw/**/*.sf.bnd
+data/raw/**/*.bf
+data/raw/**/*.q
+data/raw/**/*.s3d
+data/raw/**/*.s3dd
+data/raw/**/*.s3d.sz
+data/raw/**/*.s3d.tcframes
+data/raw/**/*.restart
+data/raw/**/*.out
+data/raw/**/*.ini
+data/raw/**/*.views
+data/raw/**/*.psm.zip
+data/raw/**/*.pyrofloors
+data/raw/**/*.pyrogeom
+
+# Backups from fix_pyrosim_fds.py
+*.fds.bak
+
+# Keep canonical metadata + README + placeholder
+!data/raw/scenario_config.json
+!data/raw/README.md
+!data/raw/.gitkeep
+
+# ─────────────────────────────────────────────────────────────────────────
+# Processed datasets (HDF5, 221 MB; regenerable via build_dataset.py)
+# ─────────────────────────────────────────────────────────────────────────
 data/processed/*.h5
 data/processed/*.hdf5
 data/processed/*.npy
 data/processed/*.npz
+!data/processed/.gitkeep
+
+# Stray HDF5 anywhere
 *.h5
 *.hdf5
+*.safetensors
 
-# Results / figures (regeneratable)
-results/
-figures/*.png
-figures/*.pdf
-figures/*.svg
+# ─────────────────────────────────────────────────────────────────────────
+# Model checkpoints (371 MB; regenerable via training)
+# ─────────────────────────────────────────────────────────────────────────
+checkpoints/**/*.pt
+checkpoints/**/*.pth
+checkpoints/**/*.ckpt
+checkpoints/**/best.pt
+checkpoints/**/final.pt
+!checkpoints/.gitkeep
+!checkpoints/**/.gitkeep
 
-# Jupyter
-.ipynb_checkpoints/
-notebooks/*.ipynb
-
-# Weights & Biases
+# ─────────────────────────────────────────────────────────────────────────
+# Weights & Biases run logs (offline runs, debug logs)
+# ─────────────────────────────────────────────────────────────────────────
 wandb/
 
-# IDE
-.idea/
-.vscode/
-*.sublime-project
-*.sublime-workspace
+# ─────────────────────────────────────────────────────────────────────────
+# Generated figures (regenerable via scripts/*.py)
+# Subdirectories are ignored; root-level canonical figures are kept.
+# ─────────────────────────────────────────────────────────────────────────
+figures/eval_convlstm/
+figures/risk_compare/
+figures/first_sim/
+figures/sim_*/
+figures/scenario_*/
 
-# OS
-.DS_Store
-Thumbs.db
+# Allow root-level canonical artefacts (commit explicitly with `git add -f` if needed)
+!figures/.gitkeep
+!figures/*.png
+!figures/*.pdf
+!figures/*.svg
 
-# Secrets
-.env
-*.pem
+# Large animations should NOT be committed even at root
+figures/*.gif
+figures/*.mp4
+
+# ─────────────────────────────────────────────────────────────────────────
+# Experiment results & logs
+# ─────────────────────────────────────────────────────────────────────────
+results/*.csv
+results/*.json
+!results/.gitkeep
+
+# Application logs
+*.log
+logs/
+debug-cli.*.log
+
+# ─────────────────────────────────────────────────────────────────────────
+# Misc temporary
+# ─────────────────────────────────────────────────────────────────────────
+tmp/
+temp/
+*.tmp
+*.bak

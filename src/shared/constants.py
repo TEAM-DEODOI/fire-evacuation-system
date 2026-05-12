@@ -89,11 +89,14 @@ V_NORM_MAX_M: float = 30.0
 CO_NORM_MAX_PPM: float = 5000.0
 """Upper bound of CO normalisation: CO_norm = log1p(CO) / log1p(5000)."""
 
-# ─── Scenario split (CLAUDE.md "Hard Constraints" → Data) ───────────────────
-N_SCENARIOS_TOTAL: int = 30
-N_SCENARIOS_TRAIN: int = 24
-N_SCENARIOS_VAL: int = 3
-N_SCENARIOS_OOD: int = 3
+# ─── Scenario split (CLAUDE.md "Hard Constraints" → Data + D-023/D-024) ────
+# D-023: production data uses 3 HRR levels (500/1000/1500 kW) × 9 standard
+#        locations + 3 held-out locations at the lower two HRRs. Total = 33.
+# D-024: all 33 → train. val/ood reserved for future simulations.
+N_SCENARIOS_TOTAL: int = 33
+N_SCENARIOS_TRAIN: int = 33
+N_SCENARIOS_VAL: int = 0
+N_SCENARIOS_OOD: int = 0
 
 # ─── Tenability thresholds (risk_indicators.md TENABILITY table) ────────────
 @dataclass(frozen=True)
@@ -131,8 +134,9 @@ class TenabilityConstants:
 TENABILITY = TenabilityConstants()
 """Singleton tenability thresholds. Access as ``TENABILITY.T_SAFE_C`` etc."""
 
-# ─── HRR scenario levels (D-012) ────────────────────────────────────────────
-HRR_LEVELS_KW: tuple[int, int, int, int] = (500, 1000, 1500, 2000)
+# ─── HRR scenario levels (D-012 → revised by D-023) ────────────────────────
+# Production data was generated at 3 HRR levels rather than the original 4.
+HRR_LEVELS_KW: tuple[int, int, int] = (500, 1000, 1500)
 
 # ─── Evacuation parameters (D-014, D-017) ───────────────────────────────────
 WALKING_SPEED_MPS: float = 1.5

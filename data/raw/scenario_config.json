@@ -1,0 +1,336 @@
+{
+  "version": 1,
+  "total": 33,
+  "scenarios": [
+    {
+      "id": "s_000",
+      "original_id": "sim_500kw_1m2_001",
+      "loc_id": "001",
+      "fire_x": 11.5,
+      "fire_y": 18.0,
+      "hrr_kw": 500,
+      "split": "train",
+      "zone": "Zone_C_좌측"
+    },
+    {
+      "id": "s_001",
+      "original_id": "sim_500kw_1m2_002",
+      "loc_id": "002",
+      "fire_x": 19.0,
+      "fire_y": 18.0,
+      "hrr_kw": 500,
+      "split": "train",
+      "zone": "Zone_C_중앙"
+    },
+    {
+      "id": "s_002",
+      "original_id": "sim_500kw_1m2_003",
+      "loc_id": "003",
+      "fire_x": 21.5,
+      "fire_y": 15.0,
+      "hrr_kw": 500,
+      "split": "train",
+      "zone": "Zone_C_D_경계"
+    },
+    {
+      "id": "s_003",
+      "original_id": "sim_500kw_1m2_004",
+      "loc_id": "004",
+      "fire_x": 18.5,
+      "fire_y": 12.5,
+      "hrr_kw": 500,
+      "split": "train",
+      "zone": "중앙홀_북측"
+    },
+    {
+      "id": "s_004",
+      "original_id": "sim_500kw_1m2_005",
+      "loc_id": "005",
+      "fire_x": 18.5,
+      "fire_y": 9.5,
+      "hrr_kw": 500,
+      "split": "train",
+      "zone": "중앙홀_헤드라인"
+    },
+    {
+      "id": "s_005",
+      "original_id": "sim_500kw_1m2_006",
+      "loc_id": "006",
+      "fire_x": 15.5,
+      "fire_y": 2.5,
+      "hrr_kw": 500,
+      "split": "train",
+      "zone": "Zone_B_중앙"
+    },
+    {
+      "id": "s_006",
+      "original_id": "sim_500kw_1m2_007",
+      "loc_id": "007",
+      "fire_x": 2.5,
+      "fire_y": 2.5,
+      "hrr_kw": 500,
+      "split": "train",
+      "zone": "Zone_B_좌측"
+    },
+    {
+      "id": "s_007",
+      "original_id": "sim_1000kw_1m2_001",
+      "loc_id": "001",
+      "fire_x": 11.5,
+      "fire_y": 18.0,
+      "hrr_kw": 1000,
+      "split": "train",
+      "zone": "Zone_C_좌측"
+    },
+    {
+      "id": "s_008",
+      "original_id": "sim_1000kw_1m2_002",
+      "loc_id": "002",
+      "fire_x": 19.0,
+      "fire_y": 18.0,
+      "hrr_kw": 1000,
+      "split": "train",
+      "zone": "Zone_C_중앙"
+    },
+    {
+      "id": "s_009",
+      "original_id": "sim_1000kw_1m2_003",
+      "loc_id": "003",
+      "fire_x": 21.5,
+      "fire_y": 15.0,
+      "hrr_kw": 1000,
+      "split": "train",
+      "zone": "Zone_C_D_경계"
+    },
+    {
+      "id": "s_010",
+      "original_id": "sim_1000kw_1m2_004",
+      "loc_id": "004",
+      "fire_x": 18.5,
+      "fire_y": 12.5,
+      "hrr_kw": 1000,
+      "split": "train",
+      "zone": "중앙홀_북측"
+    },
+    {
+      "id": "s_011",
+      "original_id": "sim_1000kw_1m2_005",
+      "loc_id": "005",
+      "fire_x": 18.5,
+      "fire_y": 9.5,
+      "hrr_kw": 1000,
+      "split": "train",
+      "zone": "중앙홀_헤드라인"
+    },
+    {
+      "id": "s_012",
+      "original_id": "sim_1000kw_1m2_006",
+      "loc_id": "006",
+      "fire_x": 15.5,
+      "fire_y": 2.5,
+      "hrr_kw": 1000,
+      "split": "train",
+      "zone": "Zone_B_중앙"
+    },
+    {
+      "id": "s_013",
+      "original_id": "sim_1000kw_1m2_007",
+      "loc_id": "007",
+      "fire_x": 2.5,
+      "fire_y": 2.5,
+      "hrr_kw": 1000,
+      "split": "train",
+      "zone": "Zone_B_좌측"
+    },
+    {
+      "id": "s_014",
+      "original_id": "sim_1500kw_1m2_001",
+      "loc_id": "001",
+      "fire_x": 11.5,
+      "fire_y": 18.0,
+      "hrr_kw": 1500,
+      "split": "train",
+      "zone": "Zone_C_좌측"
+    },
+    {
+      "id": "s_015",
+      "original_id": "sim_1500kw_1m2_002",
+      "loc_id": "002",
+      "fire_x": 19.0,
+      "fire_y": 18.0,
+      "hrr_kw": 1500,
+      "split": "train",
+      "zone": "Zone_C_중앙"
+    },
+    {
+      "id": "s_016",
+      "original_id": "sim_1500kw_1m2_003",
+      "loc_id": "003",
+      "fire_x": 21.5,
+      "fire_y": 15.0,
+      "hrr_kw": 1500,
+      "split": "train",
+      "zone": "Zone_C_D_경계"
+    },
+    {
+      "id": "s_017",
+      "original_id": "sim_1500kw_1m2_004",
+      "loc_id": "004",
+      "fire_x": 18.5,
+      "fire_y": 12.5,
+      "hrr_kw": 1500,
+      "split": "train",
+      "zone": "중앙홀_북측"
+    },
+    {
+      "id": "s_018",
+      "original_id": "sim_1500kw_1m2_005",
+      "loc_id": "005",
+      "fire_x": 18.5,
+      "fire_y": 9.5,
+      "hrr_kw": 1500,
+      "split": "train",
+      "zone": "중앙홀_헤드라인"
+    },
+    {
+      "id": "s_019",
+      "original_id": "sim_1500kw_1m2_006",
+      "loc_id": "006",
+      "fire_x": 15.5,
+      "fire_y": 2.5,
+      "hrr_kw": 1500,
+      "split": "train",
+      "zone": "Zone_B_중앙"
+    },
+    {
+      "id": "s_020",
+      "original_id": "sim_1500kw_1m2_007",
+      "loc_id": "007",
+      "fire_x": 2.5,
+      "fire_y": 2.5,
+      "hrr_kw": 1500,
+      "split": "train",
+      "zone": "Zone_B_좌측"
+    },
+    {
+      "id": "s_021",
+      "original_id": "sim_500kw_1m2_008",
+      "loc_id": "008",
+      "fire_x": 1.0,
+      "fire_y": 9.5,
+      "hrr_kw": 500,
+      "split": "train",
+      "zone": "서측_출구"
+    },
+    {
+      "id": "s_022",
+      "original_id": "sim_500kw_1m2_009",
+      "loc_id": "009",
+      "fire_x": 6.0,
+      "fire_y": 15.5,
+      "hrr_kw": 500,
+      "split": "train",
+      "zone": "Zone_A_중앙"
+    },
+    {
+      "id": "s_023",
+      "original_id": "sim_1000kw_1m2_008",
+      "loc_id": "008",
+      "fire_x": 1.0,
+      "fire_y": 9.5,
+      "hrr_kw": 1000,
+      "split": "train",
+      "zone": "서측_출구"
+    },
+    {
+      "id": "s_024",
+      "original_id": "sim_1000kw_1m2_009",
+      "loc_id": "009",
+      "fire_x": 6.0,
+      "fire_y": 15.5,
+      "hrr_kw": 1000,
+      "split": "train",
+      "zone": "Zone_A_중앙"
+    },
+    {
+      "id": "s_025",
+      "original_id": "sim_1500kw_1m2_008",
+      "loc_id": "008",
+      "fire_x": 1.0,
+      "fire_y": 9.5,
+      "hrr_kw": 1500,
+      "split": "train",
+      "zone": "서측_출구"
+    },
+    {
+      "id": "s_026",
+      "original_id": "sim_1500kw_1m2_009",
+      "loc_id": "009",
+      "fire_x": 6.0,
+      "fire_y": 15.5,
+      "hrr_kw": 1500,
+      "split": "train",
+      "zone": "Zone_A_중앙"
+    },
+    {
+      "id": "s_027",
+      "original_id": "sim_500kw_1m2_H01",
+      "loc_id": "H01",
+      "fire_x": 18.5,
+      "fire_y": 15.0,
+      "hrr_kw": 500,
+      "split": "train",
+      "zone": "OOD_중앙홀_동측"
+    },
+    {
+      "id": "s_028",
+      "original_id": "sim_500kw_1m2_H02",
+      "loc_id": "H02",
+      "fire_x": 6.0,
+      "fire_y": 5.0,
+      "hrr_kw": 500,
+      "split": "train",
+      "zone": "OOD_Zone_B_좌측"
+    },
+    {
+      "id": "s_029",
+      "original_id": "sim_500kw_1m2_H03",
+      "loc_id": "H03",
+      "fire_x": 8.0,
+      "fire_y": 14.5,
+      "hrr_kw": 500,
+      "split": "train",
+      "zone": "OOD_Zone_A_좌측"
+    },
+    {
+      "id": "s_030",
+      "original_id": "sim_1000kw_1m2_H01",
+      "loc_id": "H01",
+      "fire_x": 18.5,
+      "fire_y": 15.0,
+      "hrr_kw": 1000,
+      "split": "train",
+      "zone": "OOD_중앙홀_동측"
+    },
+    {
+      "id": "s_031",
+      "original_id": "sim_1000kw_1m2_H02",
+      "loc_id": "H02",
+      "fire_x": 6.0,
+      "fire_y": 5.0,
+      "hrr_kw": 1000,
+      "split": "train",
+      "zone": "OOD_Zone_B_좌측"
+    },
+    {
+      "id": "s_032",
+      "original_id": "sim_1000kw_1m2_H03",
+      "loc_id": "H03",
+      "fire_x": 8.0,
+      "fire_y": 14.5,
+      "hrr_kw": 1000,
+      "split": "train",
+      "zone": "OOD_Zone_A_좌측"
+    }
+  ]
+}

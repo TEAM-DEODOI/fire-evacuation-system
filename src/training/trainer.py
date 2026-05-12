@@ -54,6 +54,7 @@ class Trainer:
         grad_clip: float = 1.0,
         scheduler: Optional[Any] = None,
         callbacks: Optional[List[Any]] = None,
+        wandb_run: Optional[Any] = None,
     ) -> None:
         self.device: str = _resolve_device(device)
         self.model: torch.nn.Module = model.to(self.device)
@@ -63,44 +64,91 @@ class Trainer:
         self.grad_clip: float = float(grad_clip)
         self.scheduler = scheduler
         self.callbacks: List[Any] = list(callbacks or [])
+        # Optional Weights & Biases run handle. If provided, each epoch's
+        # metrics are logged via ``wandb_run.log({...})``.
+        self.wandb_run = wandb_run
 
     # ─── Public API ─────────────────────────────────────────────────────────
     def fit(
         self,
         train_loader: DataLoader,
-        val_loader: DataLoader,
+        val_loader: Optional[DataLoader] = None,
         save_path: Optional[Path] = None,
     ) -> Dict[str, List[float]]:
         """Run training for up to ``max_epochs`` epochs.
 
         Args:
             train_loader: Iterates ``(x, y)`` pairs of normalised tensors.
-            val_loader: Validation DataLoader.
-            save_path: Optional ``.pt`` path. When given, ``model.state_dict()``
-                is saved each time validation loss strictly improves.
+            val_loader: Validation DataLoader. ``None`` or an empty loader
+                (``len(loader.dataset) == 0``) disables the val pass —
+                ``best`` checkpoint logic then falls back to train-loss
+                improvement (D-024 mode).
+            save_path: Optional ``.pt`` path for the best checkpoint.
 
         Returns:
             History dict ``{"train_losses": [...], "val_losses": [...]}``.
+            ``val_losses`` is filled with ``nan`` when no val is supplied.
         """
+        import math
+        import time
+
+        has_val = (
+            val_loader is not None and len(val_loader.dataset) > 0  # type: ignore[arg-type]
+        )
         history: Dict[str, List[float]] = {"train_losses": [], "val_losses": []}
         best_val: float = float("inf")
+        best_train: float = float("inf")
 
         for epoch in range(self.max_epochs):
+            t0 = time.time()
             train_loss = self.train_epoch(train_loader)
-            val_loss = self.val_epoch(val_loader)
             history["train_losses"].append(train_loss)
+
+            if has_val:
+                val_loss = self.val_epoch(val_loader)  # type: ignore[arg-type]
+            else:
+                val_loss = float("nan")
             history["val_losses"].append(val_loss)
 
             if self.scheduler is not None:
                 self.scheduler.step()
+            lr_now = self.optimizer.param_groups[0]["lr"]
+            epoch_time = time.time() - t0
 
-            if save_path is not None and val_loss < best_val:
-                best_val = val_loss
-                save_path = Path(save_path)
-                save_path.parent.mkdir(parents=True, exist_ok=True)
-                torch.save(self.model.state_dict(), save_path)
+            # Best-checkpoint logic: by val_loss when available, else train_loss.
+            improved = False
+            if save_path is not None:
+                if has_val and val_loss < best_val:
+                    best_val = val_loss
+                    improved = True
+                elif (not has_val) and train_loss < best_train:
+                    best_train = train_loss
+                    improved = True
+                if improved:
+                    save_path = Path(save_path)
+                    save_path.parent.mkdir(parents=True, exist_ok=True)
+                    torch.save(self.model.state_dict(), save_path)
 
             metrics = {"train/loss": train_loss, "val/loss": val_loss}
+
+            # ── wandb logging ────────────────────────────────────────────
+            if self.wandb_run is not None:
+                log_payload: Dict[str, Any] = {
+                    "train/loss": train_loss,
+                    "lr": lr_now,
+                    "epoch_time_s": epoch_time,
+                    "epoch": epoch,
+                }
+                if has_val:
+                    log_payload["val/loss"] = val_loss
+                if improved:
+                    log_payload["best/improved"] = 1
+                    log_payload["best/score"] = best_val if has_val else best_train
+                try:
+                    self.wandb_run.log(log_payload)
+                except Exception as exc:  # pragma: no cover
+                    print(f"  wandb.log failed: {exc}")
+
             for cb in self.callbacks:
                 if hasattr(cb, "on_validation_end"):
                     cb.on_validation_end(epoch, metrics)
@@ -110,14 +158,26 @@ class Trainer:
                 for cb in self.callbacks
             )
 
+            val_str = f"val={val_loss:.4f}" if has_val else "val=—"
+            best_mark = "  *best*" if improved else ""
             print(
                 f"Epoch {epoch + 1:3d}/{self.max_epochs}  "
-                f"train={train_loss:.4f}  val={val_loss:.4f}"
-                + ("  *best*" if val_loss <= best_val else "")
+                f"train={train_loss:.4f}  {val_str}  "
+                f"lr={lr_now:.2e}  ({epoch_time:.1f}s){best_mark}"
             )
             if stop:
                 print("  → early stopping triggered")
                 break
+
+        # Drop a final summary into wandb so the run page surfaces best metrics.
+        if self.wandb_run is not None:
+            try:
+                self.wandb_run.summary["best/score"] = (
+                    best_val if has_val else best_train
+                )
+                self.wandb_run.summary["epochs_completed"] = len(history["train_losses"])
+            except Exception:  # pragma: no cover
+                pass
 
         return history
 

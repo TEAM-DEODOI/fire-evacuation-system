@@ -87,10 +87,9 @@ class FireDataset(Dataset):
                 self._targets.append(tgt)
                 self._scenario_ids.append(int(sid))
 
-        if not self._inputs:
-            raise ValueError(
-                f"split {split!r} contains no scenarios in {dataset_path}"
-            )
+        # Empty split is allowed (D-024: val/ood may be 0 until separate sims
+        # are added). Downstream Trainer detects via ``len(dataset) == 0`` and
+        # skips val pass.
 
     @staticmethod
     def _validate_scenario_shapes(

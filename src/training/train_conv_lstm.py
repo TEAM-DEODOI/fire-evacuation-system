@@ -138,6 +138,9 @@ def train(
     dataset_path: Path = Path("data/processed/dataset.h5"),
     checkpoint_dir: Optional[Path] = None,
     resume_from: Optional[Path] = None,
+    epochs_override: Optional[int] = None,
+    wandb_mode: Optional[str] = None,
+    wandb_run_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Train ``FireConvLSTM`` against the processed HDF5 dataset.
 
@@ -195,37 +198,79 @@ def train(
         num_workers=0,  # safe default; bump on Linux training boxes
         pin_memory=True,
     )
+    # D-024: val/ood may be empty until separate sims are added. Skip the
+    # val DataLoader entirely so Trainer treats the run as train-only.
+    val_dataset_size = len(dm.val_ds)
+    val_loader = dm.val_dataloader() if val_dataset_size > 0 else None
+    print(
+        f"DataModule: train={len(dm.train_ds)} pairs, "
+        f"val={'(empty)' if val_loader is None else f'{val_dataset_size} pairs'}"
+    )
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(t_cfg["lr"]),
         weight_decay=float(t_cfg["weight_decay"]),
     )
+
+    max_epochs = int(epochs_override) if epochs_override else int(t_cfg["max_epochs"])
     scheduler = None
     if str(t_cfg.get("scheduler", "")).lower() == "cosine":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
-            T_max=int(t_cfg["max_epochs"]),
+            T_max=max_epochs,
             eta_min=float(t_cfg.get("eta_min", 1e-6)),
         )
 
     def loss_fn(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         return F.mse_loss(pred, target)
 
+    # ── wandb (옵션) ────────────────────────────────────────────────────
+    wandb_run = None
+    if wandb_mode is not None:
+        from src.training.wandb_utils import init_wandb
+
+        wandb_cfg = {
+            "model": dict(m_cfg),
+            "training": {**dict(t_cfg), "max_epochs": max_epochs},
+            "dataset": {
+                "path": str(dataset_path),
+                "n_train_pairs": len(dm.train_ds),
+                "n_val_pairs": val_dataset_size,
+            },
+            "framework": "ConvLSTM3D",
+        }
+        wandb_tags = cfg.get("wandb", {}).get("tags", ["conv_lstm", "baseline"])
+        wandb_run = init_wandb(
+            project=cfg.get("wandb", {}).get("project", "fire-evacuation"),
+            config=wandb_cfg,
+            run_name=wandb_run_name,
+            mode=wandb_mode,
+            tags=wandb_tags,
+            group=cfg.get("wandb", {}).get("group", "conv_lstm_baseline"),
+        )
+
     trainer = Trainer(
         model=model,
         optimizer=optimizer,
         loss_fn=loss_fn,
-        max_epochs=int(t_cfg["max_epochs"]),
+        max_epochs=max_epochs,
         grad_clip=float(t_cfg["grad_clip"]),
         scheduler=scheduler,
+        wandb_run=wandb_run,
     )
 
-    history = trainer.fit(
-        dm.train_dataloader(),
-        dm.val_dataloader(),
-        save_path=checkpoint_dir / "best.pt",
-    )
+    try:
+        history = trainer.fit(
+            dm.train_dataloader(),
+            val_loader,
+            save_path=checkpoint_dir / "best.pt",
+        )
+    finally:
+        if wandb_run is not None:
+            from src.training.wandb_utils import finish_wandb
+            finish_wandb(wandb_run)
+
     print(f"\nbest checkpoint saved → {checkpoint_dir / 'best.pt'}")
     return history
 
@@ -260,6 +305,29 @@ def main() -> None:
     )
     parser.add_argument("--smoke-epochs", type=int, default=200)
     parser.add_argument("--smoke-target-loss", type=float, default=1e-2)
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=None,
+        help="Override config max_epochs (useful for quick proof-of-life runs).",
+    )
+    parser.add_argument(
+        "--wandb",
+        nargs="?",
+        const="online",
+        default=None,
+        choices=("online", "offline", "disabled"),
+        help=(
+            "Enable Weights & Biases logging. Pass no value (bare --wandb) "
+            "for online mode, or one of offline/disabled."
+        ),
+    )
+    parser.add_argument(
+        "--wandb-name",
+        type=str,
+        default=None,
+        help="Optional wandb run name (auto-generated otherwise).",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -276,6 +344,9 @@ def main() -> None:
             dataset_path=args.data,
             checkpoint_dir=args.checkpoint_dir,
             resume_from=args.resume,
+            epochs_override=args.epochs,
+            wandb_mode=args.wandb,
+            wandb_run_name=args.wandb_name,
         )
 
 

@@ -154,8 +154,23 @@ def main() -> int:
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--self-test", action="store_true",
                         help="Mock 데이터로 빠른 검증 (2 epoch만)")
-    parser.add_argument("--wandb", action="store_true",
-                        help="wandb 로깅 (옵션)")
+    parser.add_argument(
+        "--wandb",
+        nargs="?",
+        const="online",
+        default=None,
+        choices=("online", "offline", "disabled"),
+        help=(
+            "Enable Weights & Biases logging. Pass no value (bare --wandb) "
+            "for online mode, or one of offline/disabled."
+        ),
+    )
+    parser.add_argument(
+        "--wandb-name",
+        type=str,
+        default=None,
+        help="Optional wandb run name.",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -170,21 +185,50 @@ def main() -> int:
         train_set, val_set = random_split(dataset, [n_train, n_val])
         epochs = 2 if args.self_test else args.epochs
     else:
-        # 실데이터 로딩은 별도 작업에서 추가
-        raise NotImplementedError(
-            "HDF5 로딩은 build_dataset.py 와 짝지어 추가 예정. "
-            "지금은 --self-test 또는 --dataset 생략."
+        # 실데이터 HDF5 로딩 (D-024: val/ood 빈 split 허용)
+        import h5py
+
+        from src.dataset.data_module import FireDataModule
+
+        if not args.dataset.exists():
+            raise FileNotFoundError(
+                f"dataset not found: {args.dataset}.\n"
+                "Hint: run `python -m src.data_pipeline.build_dataset` first."
+            )
+
+        dm = FireDataModule(
+            dataset_path=args.dataset,
+            batch_size=args.batch_size,
+            num_workers=0,
+            pin_memory=True,
         )
+        train_set = dm.train_ds
+        val_set = dm.val_ds if len(dm.val_ds) > 0 else None
+        print(
+            f"Train pairs: {len(train_set)}, "
+            f"Val pairs: {'(empty)' if val_set is None else len(val_set)}"
+        )
+
+        # mask 는 HDF5 root /mask 에서 로드 (build_dataset.py 가 저장함)
+        with h5py.File(args.dataset, "r") as f:
+            mask = torch.from_numpy(f["mask"][...].astype("float32"))
+        print(f"mask: {mask.shape}, solid={int((mask == 0).sum())}/{mask.numel()}")
+        epochs = args.epochs
 
     train_loader = DataLoader(
         train_set, batch_size=args.batch_size,
         shuffle=True, num_workers=0,
     )
-    val_loader = DataLoader(
-        val_set, batch_size=args.batch_size,
-        shuffle=False, num_workers=0,
+    val_loader = (
+        DataLoader(
+            val_set, batch_size=args.batch_size,
+            shuffle=False, num_workers=0,
+        )
+        if val_set is not None else None
     )
-    print(f"Train: {len(train_set)}, Val: {len(val_set)}")
+    has_val = val_loader is not None
+    val_count = len(val_set) if val_set is not None else 0
+    print(f"Train: {len(train_set)}, Val: {val_count if has_val else '(empty)'}")
 
     # === Model ===
     model = build_default_fno().to(device)
@@ -213,17 +257,45 @@ def main() -> int:
 
     # === wandb (옵션) ===
     wandb_run = None
-    if args.wandb:
-        try:
-            import wandb
+    if args.wandb is not None:
+        from src.training.wandb_utils import init_wandb
 
-            wandb_run = wandb.init(
-                project="pi-fno-fire",
-                config=vars(args),
-            )
-        except Exception as exc:  # pragma: no cover — wandb is optional
-            print(f"wandb 비활성: {exc}")
-            wandb_run = None
+        wandb_cfg = {
+            "model": {
+                "name": "FNOFireModel",
+                "n_modes": (12, 12, 4),
+                "in_channels": 5,
+                "out_channels": 3,
+                "hidden_channels": 32,
+                "n_layers": 4,
+                "lifting_channels": 128,
+                "projection_channels": 128,
+                "param_count": n_params,
+            },
+            "training": {
+                "lr": args.lr,
+                "weight_decay": args.weight_decay,
+                "batch_size": args.batch_size,
+                "max_epochs": epochs,
+                "use_pi": bool(args.use_pi),
+            },
+            "dataset": {
+                "path": str(args.dataset) if args.dataset else "mock",
+                "n_train_pairs": len(train_set),
+                "n_val_pairs": val_count if has_val else 0,
+            },
+        }
+        run_tags = ["fno", "PI" if args.use_pi else "no-PI"]
+        if args.self_test:
+            run_tags.append("self-test")
+        wandb_run = init_wandb(
+            project="fire-evacuation",
+            config=wandb_cfg,
+            run_name=args.wandb_name,
+            mode=args.wandb,
+            tags=run_tags,
+            group="fno_pi" if args.use_pi else "fno_no_pi",
+        )
 
     # === Train ===
     args.output.mkdir(parents=True, exist_ok=True)
@@ -240,39 +312,49 @@ def main() -> int:
             model, train_loader, optimizer, loss_fn, mask,
             device, epoch, args.use_pi,
         )
-        val_loss = validate(model, val_loader, device)
+        val_loss = validate(model, val_loader, device) if has_val else float("nan")
         scheduler.step()
         t_elapsed = time.time() - t_start
 
         lr_now = scheduler.get_last_lr()[0]
         log = {
             "epoch": epoch,
-            "train_total": train_stats["total"],
-            "val_mse": val_loss,
+            "train/loss": train_stats["total"],
+            "val/loss": val_loss,
             "lr": lr_now,
             "epoch_time_s": t_elapsed,
         }
         if args.use_pi:
             for k in ("data", "boundary", "mono", "nonneg", "pde"):
-                log[f"train_{k}"] = train_stats[k]
+                log[f"train/{k}"] = train_stats[k]
+            log["stage/name"] = stage.name
+            log["stage/idx"] = next(
+                (i for i, s in enumerate(CURRICULUM_STAGES)
+                 if s.epoch_start <= epoch < s.epoch_end),
+                len(CURRICULUM_STAGES) - 1,
+            )
 
         if epoch % 10 == 0 or epoch == epochs - 1 or args.self_test:
+            val_str = f"val={val_loss:.6f}" if has_val else "val=—"
             print(
                 f"Epoch {epoch:3d}: train={train_stats['total']:.6f} "
-                f"val={val_loss:.6f} lr={lr_now:.2e} ({t_elapsed:.1f}s)"
+                f"{val_str} lr={lr_now:.2e} ({t_elapsed:.1f}s)"
             )
 
         if wandb_run is not None:
             wandb_run.log(log)
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        # D-024: best by val when available, else by train loss.
+        score = val_loss if has_val else train_stats["total"]
+        if score < best_val_loss:
+            best_val_loss = score
             torch.save(
                 {
                     "model": model.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "epoch": epoch,
                     "val_loss": val_loss,
+                    "train_loss": train_stats["total"],
                 },
                 args.output / "best.pt",
             )
@@ -289,6 +371,15 @@ def main() -> int:
 
     print(f"\n학습 완료. best val={best_val_loss:.6f}")
     print(f"저장: {args.output}/best.pt")
+
+    if wandb_run is not None:
+        try:
+            wandb_run.summary["best/score"] = best_val_loss
+            wandb_run.summary["epochs_completed"] = epochs
+        except Exception:  # pragma: no cover
+            pass
+        from src.training.wandb_utils import finish_wandb
+        finish_wandb(wandb_run)
 
     if args.self_test:
         print("\nself-test 결과:")

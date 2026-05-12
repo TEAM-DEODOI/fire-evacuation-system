@@ -134,7 +134,8 @@ class TestChannels:
 
 class TestScenarioSplit:
     def test_total(self) -> None:
-        assert N_SCENARIOS_TOTAL == 30
+        # D-023: production data uses 33 scenarios (3 HRR × 9 loc + 3 H × 2 HRR)
+        assert N_SCENARIOS_TOTAL == 33
 
     def test_splits_sum_to_total(self) -> None:
         assert (
@@ -143,8 +144,9 @@ class TestScenarioSplit:
         )
 
     def test_train_is_largest(self) -> None:
-        assert N_SCENARIOS_TRAIN > N_SCENARIOS_VAL
-        assert N_SCENARIOS_TRAIN > N_SCENARIOS_OOD
+        # D-024: val/ood may be 0 until separate sims are added.
+        assert N_SCENARIOS_TRAIN >= N_SCENARIOS_VAL
+        assert N_SCENARIOS_TRAIN >= N_SCENARIOS_OOD
 
 
 class TestNormalizationReferences:
@@ -223,7 +225,8 @@ class TestEvacuation:
 
 class TestHRRLevels:
     def test_hrr_levels(self) -> None:
-        assert HRR_LEVELS_KW == (500, 1000, 1500, 2000)
+        # D-023: production data is at 3 HRR levels rather than the original 4.
+        assert HRR_LEVELS_KW == (500, 1000, 1500)
 
     def test_hrr_levels_are_increasing(self) -> None:
         levels = list(HRR_LEVELS_KW)
