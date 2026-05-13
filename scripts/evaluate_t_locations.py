@@ -47,6 +47,7 @@ from src.data_pipeline.normalize import (
     normalize_scenario,
 )
 from src.models.conv_lstm_3d import FireConvLSTM
+from src.models.fno_model import FNOFireModel
 from src.risk_map.converter import prediction_to_danger
 from src.risk_map.risk_map_class import StaticRiskMap
 from src.risk_map.tenability import compute_total_danger
@@ -70,8 +71,10 @@ SCEN_NAME_RE = re.compile(
 
 
 # ─── Model + mask loaders ──────────────────────────────────────────────────
-def load_model(ckpt: Path, device: torch.device) -> FireConvLSTM:
-    """ConvLSTM 체크포인트 로드 (`evaluate_convlstm.py` 와 동일 절차)."""
+def load_model(
+    ckpt: Path, device: torch.device, model_type: str = "conv_lstm",
+) -> torch.nn.Module:
+    """ConvLSTM / FNO 체크포인트 로드. ``model_type`` ∈ {conv_lstm, fno}."""
     state = torch.load(ckpt, map_location=device, weights_only=False)
     if isinstance(state, dict) and "model" in state:
         state = state["model"]
@@ -80,10 +83,21 @@ def load_model(ckpt: Path, device: torch.device) -> FireConvLSTM:
             state._metadata = state.pop("_metadata")
         except Exception:
             state.pop("_metadata", None)
-    model = FireConvLSTM(
-        in_channels=5, out_channels=3, hidden_dim=32,
-        kernel_size=(3, 3, 3), num_layers=2,
-    )
+    if model_type == "conv_lstm":
+        model = FireConvLSTM(
+            in_channels=5, out_channels=3, hidden_dim=32,
+            kernel_size=(3, 3, 3), num_layers=2,
+        )
+    elif model_type == "fno":
+        # train_fno.py 의 default constructor 와 동일 (n_modes=(12,12,4))
+        model = FNOFireModel(
+            n_modes=(12, 12, 4),
+            in_channels=5, out_channels=3,
+            hidden_channels=32, n_layers=4,
+            lifting_channels=128, projection_channels=128,
+        )
+    else:
+        raise ValueError(f"unknown model_type: {model_type!r}")
     model.load_state_dict(state)
     model.to(device).eval()
     return model
@@ -172,7 +186,7 @@ def risk_confusion(
 # ─── Per-scenario evaluation ───────────────────────────────────────────────
 def evaluate_scenario(
     scen: Dict[str, Any],
-    model: FireConvLSTM,
+    model: torch.nn.Module,
     mask: np.ndarray,
     device: torch.device,
 ) -> Dict[str, Any]:
@@ -649,14 +663,27 @@ def write_markdown_report(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt", type=Path, default=Path("checkpoints/conv_lstm/best.pt"))
+    parser.add_argument("--model-type", type=str, default="conv_lstm",
+                        choices=["conv_lstm", "fno"])
+    parser.add_argument("--tag", type=str, default="",
+                        help="output 디렉터리 suffix (예: --tag fno_no_pi → figures/eval_T01_T05_fno_no_pi)")
     parser.add_argument("--raw-root", type=Path, default=Path("data/raw"))
     parser.add_argument("--dataset", type=Path, default=Path("data/processed/dataset.h5"))
-    parser.add_argument("--figures", type=Path, default=Path("figures/eval_T01_T05"))
-    parser.add_argument("--results", type=Path, default=Path("results/eval_T01_T05"))
-    parser.add_argument("--report",  type=Path, default=Path("docs/eval_T01_T05_report.md"))
+    parser.add_argument("--figures", type=Path, default=None)
+    parser.add_argument("--results", type=Path, default=None)
+    parser.add_argument("--report",  type=Path, default=None)
     parser.add_argument("--no-gif", action="store_true", help="risk animation GIF skip (속도)")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
     args = parser.parse_args()
+
+    # output 경로 자동 결정: --tag 가 있으면 디렉터리 접미사로
+    suffix = f"_{args.tag}" if args.tag else ""
+    if args.figures is None:
+        args.figures = Path(f"figures/eval_T01_T05{suffix}")
+    if args.results is None:
+        args.results = Path(f"results/eval_T01_T05{suffix}")
+    if args.report is None:
+        args.report = Path(f"docs/eval_T01_T05{suffix}_report.md")
 
     if args.device == "auto":
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -672,8 +699,8 @@ def main() -> int:
     args.figures.mkdir(parents=True, exist_ok=True)
     args.results.mkdir(parents=True, exist_ok=True)
 
-    print(f"[setup] loading model from {args.ckpt}")
-    model = load_model(args.ckpt, device)
+    print(f"[setup] loading {args.model_type} model from {args.ckpt}")
+    model = load_model(args.ckpt, device, model_type=args.model_type)
     print(f"[setup] loading mask from {args.dataset}")
     mask = load_mask(args.dataset)
 
