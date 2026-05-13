@@ -87,6 +87,13 @@ def main() -> int:
     parser.add_argument("--t0", type=float, default=120.0)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--geodesic-projection", action="store_true")
+    parser.add_argument("--mask-aware-projection", action="store_true",
+                        help="Mask-aware k-NN + adaptive σ (Step 1 A1+A3 combined)")
+    parser.add_argument("--mask-aware-only", action="store_true",
+                        help="Mask-aware k-NN only (no adaptive σ)")
+    parser.add_argument("--adaptive-sigma-only", action="store_true",
+                        help="Adaptive σ only (legacy fallback for unreachable)")
+    parser.add_argument("--sigma-floor", type=float, default=2.0)
     args = parser.parse_args()
 
     args.out_figures.mkdir(parents=True, exist_ok=True)
@@ -115,11 +122,18 @@ def main() -> int:
     sparse_ind = make_sparse_indicator(sensor_idxs, broadcast_z=True)
 
     proj_name = "geodesic" if args.geodesic_projection else "Euclidean"
+    mask_aware = args.mask_aware_projection or args.mask_aware_only
+    adaptive_sigma = args.mask_aware_projection or args.adaptive_sigma_only
+    if mask_aware:    proj_name += " + mask-aware k-NN"
+    if adaptive_sigma: proj_name += " + adaptive σ"
     print(f"[setup] precomputing {proj_name} cell-node IDW weights...")
     node_positions = [d.position for d in ALL_DETECTORS]
     knn_idx, knn_w = precompute_node_to_cell_weights(
         node_positions, k=3, sigma=5.0,
         mask=mask, use_geodesic=args.geodesic_projection,
+        mask_aware=mask_aware,
+        adaptive_sigma=adaptive_sigma,
+        sigma_floor=args.sigma_floor,
     )
 
     # Weight grid: w_t1 + w_conv + w_fno = 1

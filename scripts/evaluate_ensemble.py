@@ -57,12 +57,23 @@ def precompute_node_to_cell_weights(
     sigma: float = 5.0,
     mask: np.ndarray = None,
     use_geodesic: bool = False,
+    mask_aware: bool = False,
+    adaptive_sigma: bool = False,
+    sigma_floor: float = 2.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """각 cell 에서 k-nearest node 의 IDW weight 계산.
 
     Args:
         use_geodesic: True 면 BFS geodesic distance (벽 우회), False 면 Euclidean.
         mask: (X, Y, Z) fluid/solid mask — geodesic 사용 시 필수.
+        mask_aware: True 면 unreachable (BFS=inf) 노드의 weight 를 0 으로
+            강제 (k 슬롯에 들어가도 영향 0). 또한 모든 노드가 unreachable
+            인 cell (solid) 은 `np.ones(k)/k` fallback 대신 weight 0 유지.
+        adaptive_sigma: True 면 cell-local σ 사용 — top-k 중 reachable 한
+            가장 먼 노드 거리를 σ 로. 작은 방 cell 은 작은 σ (local 강조),
+            큰 방 cell 은 큰 σ.
+        sigma_floor: adaptive_sigma 시 minimum σ (m). 너무 작으면 단일
+            노드만 dominate → 노이즈 발생.
 
     Returns:
         knn_idx: (X, Y, Z, k) — k-nearest node 인덱스
@@ -109,10 +120,41 @@ def precompute_node_to_cell_weights(
                 # Replace inf (unreachable) with large value
                 d_safe = np.where(np.isfinite(d), d, 1e6)
                 top_k = np.argsort(d_safe)[:k]
+                top_k_dists = d_safe[top_k]
                 knn_idx[ix, iy, iz] = top_k
-                w = np.exp(-d_safe[top_k] ** 2 / (2 * sigma ** 2))
-                w_sum = w.sum()
-                w = w / (w_sum + 1e-9) if w_sum > 1e-9 else np.ones(k) / k
+
+                # Reachable mask (top-k slot 별)
+                reachable = top_k_dists < 1e5    # < 1e5 m = reachable
+
+                # σ selection
+                if adaptive_sigma:
+                    valid_dists = top_k_dists[reachable]
+                    if valid_dists.size > 0:
+                        # k-th nearest reachable distance (with floor)
+                        sigma_cell = max(sigma_floor, float(valid_dists[-1]))
+                    else:
+                        sigma_cell = sigma
+                else:
+                    sigma_cell = sigma
+
+                w = np.exp(-top_k_dists ** 2 / (2 * sigma_cell ** 2))
+
+                if mask_aware:
+                    # Unreachable slot → weight 0
+                    w = np.where(reachable, w, 0.0)
+                    w_sum = w.sum()
+                    if w_sum > 1e-9:
+                        w = w / w_sum
+                    else:
+                        # Solid cell or fully unreachable — leave at 0
+                        # (callers should multiply final danger map by fluid
+                        # mask anyway; metrics are already mask-filtered).
+                        w = np.zeros_like(w)
+                else:
+                    # Legacy behaviour: equal-weight fallback for solid cells
+                    w_sum = w.sum()
+                    w = w / (w_sum + 1e-9) if w_sum > 1e-9 else np.ones(k) / k
+
                 knn_w[ix, iy, iz] = w
     return knn_idx, knn_w
 
@@ -271,6 +313,11 @@ def main() -> int:
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--geodesic-projection", action="store_true",
                         help="Use BFS geodesic distance (wall-aware) instead of Euclidean for cell-projection")
+    parser.add_argument("--mask-aware-projection", action="store_true",
+                        help="Mask-aware k-NN: unreachable nodes weight=0, "
+                             "and adaptive σ from k-th nearest reachable distance.")
+    parser.add_argument("--sigma-floor", type=float, default=2.0,
+                        help="Minimum σ when --mask-aware-projection is on.")
     args = parser.parse_args()
 
     args.out_figures.mkdir(parents=True, exist_ok=True)
@@ -304,11 +351,16 @@ def main() -> int:
 
     # Precompute cell ← node mapping (한 번만)
     proj_name = "geodesic" if args.geodesic_projection else "Euclidean"
+    if args.mask_aware_projection:
+        proj_name += " + mask-aware k-NN + adaptive σ"
     print(f"[setup] precomputing {proj_name} k-NN cell-to-node weights (k={args.knn_k})...")
     node_positions = [d.position for d in ALL_DETECTORS]
     knn_idx, knn_w = precompute_node_to_cell_weights(
         node_positions, k=args.knn_k, sigma=args.knn_sigma,
         mask=mask, use_geodesic=args.geodesic_projection,
+        mask_aware=args.mask_aware_projection,
+        adaptive_sigma=args.mask_aware_projection,
+        sigma_floor=args.sigma_floor,
     )
     print(f"        knn_idx {knn_idx.shape}, knn_w {knn_w.shape}")
 
