@@ -41,14 +41,15 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from src.integration.metrics import ScenarioMetrics
-from src.integration.person_agent import PersonAgent
 from src.integration.scene import Scene, SceneConfig
-from src.path_planning.building_graph import build_graph, exit_nodes
-from src.risk_map.risk_map_class import RiskMap, StaticRiskMap
-from src.shared.constants import DT_SLCF, GRID_SHAPE, N_TIMESTEPS
-
-
-_PLACEHOLDER_URDF = Path("assets/placeholder_building.urdf")
+from src.integration.scenarios._common import (
+    PLACEHOLDER_URDF,
+    exit_positions,
+    load_truth_risk_map,
+    spawn_agents,
+    zero_risk_map,
+)
+from src.risk_map.risk_map_class import RiskMap
 
 
 # ─── Fixed-sign provider ──────────────────────────────────────────────────
@@ -116,119 +117,7 @@ class FixedSignNetwork:
         return best
 
 
-# ─── Internal helpers ─────────────────────────────────────────────────────
-_CACHE_DIR = Path("results/cache/s1_risk_maps")
-
-
-def _zero_risk_map() -> StaticRiskMap:
-    """All-safe risk map. Fallback when no FDS data is available."""
-    nx_, ny_, nz_ = GRID_SHAPE
-    times = np.arange(0.0, N_TIMESTEPS * DT_SLCF, DT_SLCF)
-    return StaticRiskMap(
-        danger_array=np.zeros((N_TIMESTEPS, nx_, ny_, nz_), dtype=np.float32),
-        times=times,
-    )
-
-
-def _load_truth_risk_map(fds_dir: Path, verbose: bool = True) -> RiskMap:
-    """Try to build a real :class:`StaticRiskMap` from ``fds_dir``.
-
-    Caches the resulting ``(danger, times)`` to
-    ``results/cache/s1_risk_maps/<scenario>.npz`` (created on first
-    successful load) so re-runs skip the fdsreader cost.
-
-    Returns the zero risk map if ``fds_dir`` is missing, empty, or
-    fails to parse -- in that case callers see ``exposure`` = 0 and
-    a clear warning on stdout.
-    """
-    cache_key = fds_dir.name if fds_dir.name else "_unnamed"
-    cache_path = _CACHE_DIR / f"{cache_key}.npz"
-
-    if cache_path.exists():
-        try:
-            if verbose:
-                print(f"  [risk_map] cache hit: {cache_path}")
-            return StaticRiskMap.from_npy(cache_path)
-        except Exception as exc:  # noqa: BLE001
-            if verbose:
-                print(
-                    f"  [risk_map] cache read failed ({cache_path}): {exc}; "
-                    f"re-loading from FDS"
-                )
-
-    if not fds_dir.exists():
-        if verbose:
-            print(
-                f"  [risk_map] FDS dir missing ({fds_dir}); "
-                f"falling back to zero risk"
-            )
-        return _zero_risk_map()
-
-    try:
-        if verbose:
-            print(
-                f"  [risk_map] loading FDS RiskMap from {fds_dir} "
-                f"(first call: ~30 s)"
-            )
-        rm = StaticRiskMap.from_fds_dir(fds_dir)
-    except Exception as exc:  # noqa: BLE001
-        if verbose:
-            print(
-                f"  [risk_map] FDS load failed ({exc.__class__.__name__}: {exc}); "
-                f"falling back to zero risk"
-            )
-        return _zero_risk_map()
-
-    try:
-        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        rm.save(cache_path)
-        if verbose:
-            size_kb = cache_path.stat().st_size / 1024
-            print(f"  [risk_map] cached -> {cache_path} ({size_kb:.0f} KB)")
-    except Exception as exc:  # noqa: BLE001
-        if verbose:
-            print(f"  [risk_map] cache write failed: {exc}")
-
-    return rm
-
-
-def _spawn_agents(
-    scene: Scene,
-    n_persons: int,
-    seed: int,
-) -> List[PersonAgent]:
-    """Spawn up to ``n_persons`` agents at distinct room-node centres."""
-    graph = build_graph()
-    room_node_ids = [
-        nid for nid, attrs in graph.nodes(data=True)
-        if attrs.get("node_type") == "room"
-    ]
-    if not room_node_ids:
-        raise RuntimeError("building graph has no room nodes")
-
-    rng = np.random.default_rng(seed)
-    n = min(n_persons, len(room_node_ids))
-    chosen = list(rng.choice(room_node_ids, size=n, replace=False))
-
-    agents: List[PersonAgent] = []
-    for i, nid in enumerate(chosen):
-        base = np.asarray(graph.nodes[nid]["pos"], dtype=np.float64)
-        # Small XY jitter so agents don't stack on the exact node coord.
-        jitter = rng.uniform(-0.3, 0.3, size=2)
-        start = np.array([base[0] + jitter[0], base[1] + jitter[1], base[2]])
-        a = PersonAgent(agent_id=f"person_{i}_{nid}")
-        a.spawn(scene.client, start)
-        agents.append(a)
-    return agents
-
-
-def _exit_positions() -> List[np.ndarray]:
-    """All exit-node positions as (3,) arrays."""
-    graph = build_graph()
-    return [
-        np.asarray(graph.nodes[nid]["pos"], dtype=np.float64)
-        for nid in exit_nodes(graph)
-    ]
+# Shared helpers live in src.integration.scenarios._common — see imports above.
 
 
 # ─── Run loop ─────────────────────────────────────────────────────────────
@@ -267,24 +156,24 @@ def run(
             regenerate it).
         RuntimeError: If the building graph has no room nodes.
     """
-    if not _PLACEHOLDER_URDF.exists():
+    if not PLACEHOLDER_URDF.exists():
         raise FileNotFoundError(
-            f"placeholder URDF missing: {_PLACEHOLDER_URDF}. "
+            f"placeholder URDF missing: {PLACEHOLDER_URDF}. "
             f"Run: python -m src.integration.urdf_builder"
         )
 
     cfg = SceneConfig(
         connection_mode="DIRECT",
-        building_urdf=_PLACEHOLDER_URDF,
+        building_urdf=PLACEHOLDER_URDF,
         dt_s=dt_s,
         draw_origin_axes=False,
     )
     scene = Scene.create(cfg)
     try:
         obstacles = [scene.building_id]
-        truth_rm = _load_truth_risk_map(fds_dir, verbose=True)
-        exits_xyz = _exit_positions()
-        agents = _spawn_agents(scene, n_persons, seed)
+        truth_rm = load_truth_risk_map(fds_dir, verbose=True)
+        exits_xyz = exit_positions()
+        agents = spawn_agents(scene, n_persons, seed)
         n_actual = len(agents)
         # Per fairness setup (interface_contracts.md sect. 6) the planner
         # and the experienced truth use the SAME RiskMap in S1. Drone
@@ -374,7 +263,7 @@ if __name__ == "__main__":
 
     # ── 1. FixedSignNetwork.next_waypoint with empty exits ─────────────
     print("\n[1] FixedSignNetwork with no exits -> None")
-    empty = FixedSignNetwork(risk_map=_zero_risk_map(), exit_positions=[])
+    empty = FixedSignNetwork(risk_map=zero_risk_map(), exit_positions=[])
     wp = empty.next_waypoint(np.array([5.0, 5.0, 1.5]), t=0.0)
     if wp is not None:
         errors.append(f"expected None for empty exits, got {wp}")
@@ -383,8 +272,8 @@ if __name__ == "__main__":
 
     # ── 2. FixedSignNetwork picks nearest below-threshold exit ─────────
     print("\n[2] FixedSignNetwork nearest-exit logic")
-    rm = _zero_risk_map()  # all-safe
-    exits = _exit_positions()
+    rm = zero_risk_map()  # all-safe
+    exits = exit_positions()
     print(f"  exits = {[tuple(round(v, 1) for v in e) for e in exits]}")
     net = FixedSignNetwork(risk_map=rm, exit_positions=exits, danger_threshold=0.5)
     # Agent at (5, 4): nearest is exit_west (0, 5) dist ~5.1
@@ -465,7 +354,7 @@ if __name__ == "__main__":
         print(
             "\n[6a] Load FDS RiskMap and probe peak danger field"
         )
-        truth = _load_truth_risk_map(real_fds, verbose=True)
+        truth = load_truth_risk_map(real_fds, verbose=True)
         # Probe a 5x5 grid in the central courtyard area at t=120s.
         peak_seen = 0.0
         for x in np.linspace(5.0, 25.0, 5):
