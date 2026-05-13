@@ -43,7 +43,9 @@ import numpy as np
 from src.integration.metrics import ScenarioMetrics
 from src.integration.scene import Scene, SceneConfig
 from src.integration.scenarios._common import (
+    BUILDING_URDF,
     PLACEHOLDER_URDF,
+    building_urdf_path,
     exit_positions,
     load_truth_risk_map,
     spawn_agents,
@@ -156,15 +158,17 @@ def run(
             regenerate it).
         RuntimeError: If the building graph has no room nodes.
     """
-    if not PLACEHOLDER_URDF.exists():
+    urdf = building_urdf_path()
+    if not urdf.exists():
         raise FileNotFoundError(
-            f"placeholder URDF missing: {PLACEHOLDER_URDF}. "
-            f"Run: python -m src.integration.urdf_builder"
+            f"No building URDF on disk. Tried {BUILDING_URDF} (real STL) "
+            f"and {PLACEHOLDER_URDF} (fallback). "
+            f"Generate one: python -m src.integration.urdf_builder"
         )
 
     cfg = SceneConfig(
         connection_mode="DIRECT",
-        building_urdf=PLACEHOLDER_URDF,
+        building_urdf=urdf,
         dt_s=dt_s,
         draw_origin_axes=False,
     )
@@ -308,24 +312,30 @@ if __name__ == "__main__":
         errors.append(f"casualty != 0: {result.casualty_rate}")
     if result.cumulative_fed != 0.0:
         errors.append(f"fed != 0: {result.cumulative_fed}")
-    # Without a planner some agents get stuck on the interior partition.
-    # Require at least 40 % arrived (≥ 2 of 5).
-    if result.evacuation_success_rate < 0.4:
+    # NB: with the real STL-derived building (M1-full), greedy
+    # nearest-exit S1 can legitimately produce evac=0 % on some seeds
+    # -- every agent's straight-line path is blocked by interior walls
+    # and they wait out the run. This is the H6 baseline we care about.
+    # Just sanity-check the metric ranges; do NOT hard-fail on low evac.
+    if not (0.0 <= result.evacuation_success_rate <= 1.0):
         errors.append(
-            f"only {result.evacuation_success_rate*100:.0f}% arrived "
-            f"(expected >= 40%)"
+            f"evac rate out of [0, 1]: {result.evacuation_success_rate}"
         )
     if (
         not math.isnan(result.mean_evacuation_time_s)
-        and result.mean_evacuation_time_s > 60.0
+        and result.mean_evacuation_time_s < 0
     ):
         errors.append(
-            f"mean evac time {result.mean_evacuation_time_s} exceeds 60 s"
+            f"mean evac time negative: {result.mean_evacuation_time_s}"
         )
     if result.evacuation_success_rate > 0 and math.isnan(
         result.mean_evacuation_time_s
     ):
         errors.append("at least 1 arrived but mean_evac_time is NaN")
+    if result.evacuation_success_rate == 0 and not math.isnan(
+        result.mean_evacuation_time_s
+    ):
+        errors.append("nobody arrived but mean_evac_time is finite")
 
     # ── 4. Different seed gives different agent set (likely) ───────────
     print("\n[4] Different seed produces a result (no crash)")

@@ -39,7 +39,9 @@ import torch
 from src.integration.metrics import ScenarioMetrics
 from src.integration.scene import Scene, SceneConfig
 from src.integration.scenarios._common import (
+    BUILDING_URDF,
     PLACEHOLDER_URDF,
+    building_urdf_path,
     exit_positions,
     load_truth_risk_map,
     spawn_agents,
@@ -233,15 +235,17 @@ def run(
     """
     del fno_checkpoint, dataset_path, n_drones  # M5-mini: not used.
 
-    if not PLACEHOLDER_URDF.exists():
+    urdf = building_urdf_path()
+    if not urdf.exists():
         raise FileNotFoundError(
-            f"placeholder URDF missing: {PLACEHOLDER_URDF}. "
-            f"Run: python -m src.integration.urdf_builder"
+            f"No building URDF on disk. Tried {BUILDING_URDF} (real STL) "
+            f"and {PLACEHOLDER_URDF} (fallback). "
+            f"Generate one: python -m src.integration.urdf_builder"
         )
 
     cfg = SceneConfig(
         connection_mode="DIRECT",
-        building_urdf=PLACEHOLDER_URDF,
+        building_urdf=urdf,
         dt_s=dt_s,
         draw_origin_axes=False,
     )

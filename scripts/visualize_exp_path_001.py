@@ -84,6 +84,15 @@ def _boxplot(ax, df: pd.DataFrame, metric: str, title: str, ylabel: str,
     ax.set_axisbelow(True)
 
 
+def _equal_ignore_nan(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Element-wise equality where NaN == NaN counts as True."""
+    return np.where(
+        np.isnan(a) & np.isnan(b),
+        True,
+        np.isclose(a, b),
+    )
+
+
 def _compute_deltas(df: pd.DataFrame) -> Dict[str, float]:
     """Mean per-(fire, seed) deltas between scenarios."""
     s1 = (
@@ -112,7 +121,10 @@ def _compute_deltas(df: pd.DataFrame) -> Dict[str, float]:
         "s3_vs_s2_identical_rows": int(
             (
                 (s2.evacuation_success_rate == s3.evacuation_success_rate)
-                & np.isclose(s2.mean_evacuation_time_s, s3.mean_evacuation_time_s)
+                & _equal_ignore_nan(
+                    s2.mean_evacuation_time_s.values,
+                    s3.mean_evacuation_time_s.values,
+                )
                 & np.isclose(
                     s2.danger_zone_exposure_time_s,
                     s3.danger_zone_exposure_time_s,

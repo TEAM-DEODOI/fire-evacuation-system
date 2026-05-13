@@ -32,8 +32,36 @@ from src.shared.constants import DT_SLCF, GRID_SHAPE, N_TIMESTEPS
 
 
 # ─── Constants ────────────────────────────────────────────────────────────
+BUILDING_URDF: Path = Path("assets/building.urdf")
+"""Real-STL-derived building URDF (M1-full, 2026-05-14).
+
+Generated once via ``build_building_urdf(assets/science_hall_lv5.stl, ...)``
+and re-loaded by every scenario. Mesh tag references the STL with
+``scale="0.001 0.001 0.001"`` (mm -> m per L-010).
+"""
+
 PLACEHOLDER_URDF: Path = Path("assets/placeholder_building.urdf")
+"""Fallback 9-box L-shape URDF. Useful for unit tests that need fast
+load + deterministic geometry, but does **not** match the
+``shared/building.py`` 19-node graph topology -- some graph edges
+cross its solid interior partitions. Production scenarios should
+prefer :data:`BUILDING_URDF`.
+"""
+
 CACHE_DIR: Path = Path("results/cache/scenario_risk_maps")
+
+
+def building_urdf_path(prefer_real: bool = True) -> Path:
+    """Return the URDF a scenario should load.
+
+    Default behaviour: prefer the real STL-derived URDF; fall back to
+    the placeholder if it is missing. ``prefer_real=False`` forces the
+    placeholder (used by tests that depend on its specific 9-box
+    topology -- e.g. M2-mini partition collision).
+    """
+    if prefer_real and BUILDING_URDF.exists():
+        return BUILDING_URDF
+    return PLACEHOLDER_URDF
 
 
 # ─── RiskMap helpers ──────────────────────────────────────────────────────

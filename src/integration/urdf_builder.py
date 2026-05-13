@@ -251,34 +251,137 @@ def build_building_urdf(
 ) -> UrdfBuildResult:
     """Wrap ``stl_path`` in a single-link fixed-base URDF.
 
+    Reads the STL via :mod:`trimesh` to probe units + bounds, then
+    emits a URDF whose ``<mesh>`` tag references ``stl_path`` by a
+    relative path. PyBullet's URDF loader resolves meshes relative to
+    the URDF file's parent directory, so the URDF and STL should live
+    in the same folder (typically ``assets/``).
+
     Args:
         stl_path: Path to the building STL.
         out_urdf_path: Where to write the URDF. The URDF references
-            ``stl_path`` by a path relative to ``out_urdf_path``'s
-            parent (PyBullet's URDF loader resolves meshes relative to
-            the URDF).
+            ``stl_path`` by ``stl_path.name`` only (assumes they share
+            a parent). Parent of ``out_urdf_path`` is created if missing.
         name: ``<robot name=...>`` attribute.
-        auto_mm_to_m: If the STL bounding box on any axis exceeds 1e3,
-            assume mm units and apply ``scale=0.001`` to the mesh tag.
-        strict_bounds: If True, raise on out-of-SLCF-region geometry.
-            Default False emits a warning instead (the building may
-            legitimately overhang the buffer zone in Z by 0.2 m, per
-            D-015).
+        auto_mm_to_m: If the STL bounding box max-extent exceeds 1e3,
+            assume mm units and apply ``scale=0.001`` to the mesh tag
+            (L-010 lesson). Set to ``False`` to keep raw STL units.
+        strict_bounds: If ``True``, raise on out-of-SLCF-region geometry
+            after any auto-scaling. Default ``False`` emits a warning
+            instead (Z can legitimately overhang to 3.2 m per D-015,
+            and small XY edge gaps are normal for architectural STLs).
 
     Returns:
-        :class:`UrdfBuildResult`.
+        :class:`UrdfBuildResult` populated with the actual scale used
+        and the post-scaling bounding box.
 
     Raises:
         FileNotFoundError: If ``stl_path`` does not exist.
-        ValueError: If ``strict_bounds`` and the STL extends outside
-            the SLCF region.
-        NotImplementedError: Pending the next implementation commit
-            (needs ``trimesh`` for bounding-box read).
+        ValueError: If ``strict_bounds`` is set and any axis of the
+            scaled bounding box lies outside the SLCF region (with a
+            small 0.2 m Z tolerance per D-015).
+        ImportError: If ``trimesh`` is not installed.
     """
-    raise NotImplementedError(
-        "Week 12 M1: implement STL bounding-box probe (trimesh) + "
-        "URDF emission via _STL_URDF_TEMPLATE. Until then, use "
-        "build_placeholder_urdf for development."
+    stl_path = Path(stl_path)
+    out_urdf_path = Path(out_urdf_path)
+    if not stl_path.exists():
+        raise FileNotFoundError(f"STL not found: {stl_path}")
+
+    # Lazy import: avoid forcing trimesh on every caller of this module.
+    try:
+        import trimesh
+    except ImportError as exc:  # pragma: no cover
+        raise ImportError(
+            "trimesh is required for build_building_urdf; "
+            "install with `pip install trimesh`."
+        ) from exc
+
+    mesh = trimesh.load(str(stl_path), force="mesh")
+    if not hasattr(mesh, "bounds"):
+        raise ValueError(
+            f"trimesh did not return a single mesh for {stl_path} "
+            f"(got {type(mesh).__name__}); STL may contain multiple "
+            f"disconnected scenes"
+        )
+    raw_bounds = mesh.bounds  # (2, 3) -- min and max corners
+    raw_extents = raw_bounds[1] - raw_bounds[0]
+    max_extent = float(raw_extents.max())
+
+    warnings: List[str] = []
+    # L-010: PyroSim STLs are usually mm.
+    if auto_mm_to_m and max_extent > 1e3:
+        scale = (0.001, 0.001, 0.001)
+        scaled_bounds = (
+            (
+                raw_bounds[0, 0] * 0.001,
+                raw_bounds[1, 0] * 0.001,
+            ),
+            (
+                raw_bounds[0, 1] * 0.001,
+                raw_bounds[1, 1] * 0.001,
+            ),
+            (
+                raw_bounds[0, 2] * 0.001,
+                raw_bounds[1, 2] * 0.001,
+            ),
+        )
+        warnings.append(
+            f"auto mm->m: raw max extent {max_extent:.1f} -> scale 0.001 "
+            f"applied"
+        )
+    else:
+        scale = (1.0, 1.0, 1.0)
+        scaled_bounds = (
+            (float(raw_bounds[0, 0]), float(raw_bounds[1, 0])),
+            (float(raw_bounds[0, 1]), float(raw_bounds[1, 1])),
+            (float(raw_bounds[0, 2]), float(raw_bounds[1, 2])),
+        )
+
+    # SLCF bounds check.
+    (xmin, xmax), (ymin, ymax), (zmin, zmax) = scaled_bounds
+    lx, ly, _lz = DOMAIN_SIZE_M
+    z_overhang_tol = 0.2  # D-015: STL building may extend to 3.2 m
+    z_max_allowed = _lz + z_overhang_tol
+    oob_msgs: List[str] = []
+    if xmin < -1e-3 or xmax > lx + 1e-3:
+        oob_msgs.append(f"X [{xmin:.3f},{xmax:.3f}] outside [0,{lx}]")
+    if ymin < -1e-3 or ymax > ly + 1e-3:
+        oob_msgs.append(f"Y [{ymin:.3f},{ymax:.3f}] outside [0,{ly}]")
+    if zmin < -1e-3 or zmax > z_max_allowed + 1e-3:
+        oob_msgs.append(
+            f"Z [{zmin:.3f},{zmax:.3f}] outside [0,{z_max_allowed}]"
+        )
+    if oob_msgs:
+        if strict_bounds:
+            raise ValueError(
+                "STL bounds outside SLCF region after scaling: "
+                + "; ".join(oob_msgs)
+            )
+        warnings.extend(oob_msgs)
+
+    # Emit URDF -- mesh filename is relative to out_urdf_path.parent.
+    mesh_filename = stl_path.name
+    out_urdf_path.parent.mkdir(parents=True, exist_ok=True)
+    if stl_path.parent.resolve() != out_urdf_path.parent.resolve():
+        warnings.append(
+            f"STL ({stl_path}) and URDF ({out_urdf_path}) live in different "
+            f"directories; URDF references mesh by name '{mesh_filename}' "
+            f"and PyBullet's loader resolves relative to URDF parent"
+        )
+
+    urdf_text = _STL_URDF_TEMPLATE.format(
+        name=name,
+        mesh_filename=mesh_filename,
+        scale_x=scale[0], scale_y=scale[1], scale_z=scale[2],
+    )
+    out_urdf_path.write_text(urdf_text, encoding="utf-8")
+
+    return UrdfBuildResult(
+        urdf_path=out_urdf_path,
+        mesh_path=stl_path,
+        scale=scale,
+        bounding_box=scaled_bounds,
+        warnings=warnings,
     )
 
 
@@ -471,14 +574,71 @@ if __name__ == "__main__":
         else:
             errors.append("zero-size dim did not raise")
 
-    # ── 6. STL path still skeleton ────────────────────────────────────
-    print("\n[6] build_building_urdf still skeleton (STL path)")
+    # ── 6. build_building_urdf STL path: missing STL -> FileNotFoundError ─
+    print("\n[6] build_building_urdf rejects missing STL")
     try:
-        build_building_urdf(Path("dummy.stl"), Path("dummy.urdf"))
-    except NotImplementedError:
-        print("  PASS: STL path raises NotImplementedError")
+        build_building_urdf(Path("dummy_missing.stl"), Path("dummy.urdf"))
+    except FileNotFoundError:
+        print("  PASS: missing STL -> FileNotFoundError")
     else:
-        errors.append("STL path did not raise NotImplementedError")
+        errors.append("missing STL did not raise FileNotFoundError")
+
+    # ── 7. Real STL -> URDF (if present): mm->m auto-scale + bounds ───
+    real_stl = Path("assets/science_hall_lv5.stl")
+    if real_stl.exists():
+        print("\n[7] build_building_urdf on real STL (mm -> m auto-scale)")
+        with tempfile.TemporaryDirectory() as td:
+            # Copy STL into the same dir as the target URDF (PyBullet
+            # resolves <mesh filename=...> relative to URDF).
+            import shutil
+            stl_in_td = Path(td) / real_stl.name
+            shutil.copy2(real_stl, stl_in_td)
+            urdf_path = Path(td) / "building.urdf"
+            res = build_building_urdf(stl_in_td, urdf_path)
+            print(
+                f"  scale={res.scale}  "
+                f"bbox X{res.bounding_box[0]} Y{res.bounding_box[1]} "
+                f"Z{res.bounding_box[2]}"
+            )
+            for w in res.warnings:
+                print(f"  [warn] {w}")
+            if res.scale != (0.001, 0.001, 0.001):
+                errors.append(
+                    f"expected mm-to-m scale 0.001 for real STL, got {res.scale}"
+                )
+            (xmin, xmax), (ymin, ymax), (zmin, zmax) = res.bounding_box
+            if not (xmax <= _LX + 1e-2 and ymax <= _LY + 1e-2):
+                errors.append(
+                    f"scaled real-STL bbox exceeds SLCF region: "
+                    f"X<={xmax}, Y<={ymax}"
+                )
+            # And it should actually load in PyBullet.
+            cid = p.connect(p.DIRECT)
+            try:
+                bid = p.loadURDF(
+                    str(urdf_path),
+                    basePosition=[0.0, 0.0, 0.0],
+                    useFixedBase=True,
+                    physicsClientId=cid,
+                )
+                aabb_min, aabb_max = p.getAABB(bid, physicsClientId=cid)
+                print(
+                    f"  PyBullet AABB min={tuple(round(v, 2) for v in aabb_min)} "
+                    f"max={tuple(round(v, 2) for v in aabb_max)}"
+                )
+                # Cell-level check: AABB should roughly match scaled bbox.
+                if not all(
+                    abs(aabb_max[i] - [xmax, ymax, zmax][i]) < 1.0
+                    for i in range(3)
+                ):
+                    errors.append(
+                        f"PyBullet AABB {aabb_max} disagrees with "
+                        f"trimesh bbox max ({xmax}, {ymax}, {zmax})"
+                    )
+            finally:
+                p.disconnect(physicsClientId=cid)
+    else:
+        print(f"\n[7] SKIP: real STL {real_stl} not present")
 
     # ── Verdict ───────────────────────────────────────────────────────
     if errors:
