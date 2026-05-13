@@ -431,6 +431,61 @@ sensor 위치 외 cell T/V/CO 채널을 0 으로 강제. 결과: IoU 0.182 → *
 
 ---
 
+## L-014: conda-forge pybullet 설치가 pip numpy 를 깨뜨림 (numpy ABI 충돌)
+
+**Symptom**: `conda install -n <env> -c conda-forge pybullet` 직후 모든
+numpy 호출이 즉시 crash. 증상은 두 단계:
+
+1. 단순 `import numpy as np; np.zeros(3).sum()` 가 exit code
+   `0xC0000409` (`STATUS_STACK_BUFFER_OVERRUN`) 로 종료. 출력은 없음.
+2. `import pybullet` 시 banner `pybullet build time: Oct 21 2025 ...` 출력 후
+   `AttributeError: module 'numpy._globals' has no attribute
+   '_signature_descriptor'` + `ImportError: numpy._core.multiarray failed
+   to import` 발생.
+
+**Root cause**: conda-forge 의 최신 `pybullet 3.25 py311h*_5` / `_4` 빌드는
+**numpy ≥ 2.0** ABI 로 컴파일됨. 우리 env 는 `requirements.txt` 의 핀
+(`torch 2.0.1` → `numpy<2`) 때문에 numpy **1.26.4** 가 pip 로 설치돼 있음.
+conda 의 dependency solver 가 pybullet 설치 시 numpy 라이브러리 파일을
+부분적으로 덮어쓰지만 metadata 는 `pypi_0 pypi` 로 남겨, 결과적으로 numpy
+설치가 **불완전·일관성 깨진 상태**가 됨. numpy 자체 import 도 crash.
+
+torch 2.0.1 (2023-06) 은 numpy 2.0 (2024-06) 이전 릴리스라 numpy 2.x 와는
+호환 불가 — env-wide 로 numpy 를 2.x 로 올리는 옵션은 ML 파이프라인 전체가
+망가지므로 차단됨.
+
+**Fix** (재현 가능한 절차):
+
+```bash
+# 1) numpy 1.x ABI 로 빌드된 더 오래된 pybullet 빌드 명시 (_3 또는 그 이전)
+conda install -n fire-evac -c conda-forge --override-channels \
+    pybullet=3.25=py311hbc92ba2_3 -y
+
+# 2) conda 가 부분 덮어쓴 pip numpy 를 강제 재설치 → ABI 복구
+<env-python> -m pip install --force-reinstall --no-deps numpy==1.26.4
+
+# 3) 검증
+<env-python> -c "import numpy as np; print(np.zeros(3).sum())"
+<env-python> -c "import pybullet as p; p.connect(p.DIRECT); p.disconnect()"
+```
+
+`conda search -c conda-forge pybullet=3.25=py311* --info` 로 빌드별 numpy
+범위를 직접 확인 가능. numpy<2.0a0 으로 빌드된 hash 만 사용할 것:
+`_0 / _1 / _2 / _3` ✅, `_4 / _5` ❌.
+
+**Status**: Fixed for fire-evac env (2026-05-14). Conda+pip mixing 의
+일반적 위험으로, 향후 pybullet upgrade 시 동일 절차 적용.
+
+requirements.txt 의 `pybullet==3.2.6` 핀은 Windows Python 3.11 wheel 부재로
+pip 설치 불가 — conda-forge `pybullet=3.25=py311hbc92ba2_3` 가 사실상의
+대체. 다음 requirements.txt 정리 시 반영 권장.
+
+**Cross-ref**: `docs/decisions.md D-025` (Week 12 PyBullet scope),
+`requirements.txt` (`pybullet==3.2.6` 핀 stale), `docs/pybullet_integration_spec.md §7`
+(환경/의존성 절 — 갱신 필요).
+
+---
+
 ## How to Add a Lesson
 
 When you encounter and fix a bug worth remembering:
