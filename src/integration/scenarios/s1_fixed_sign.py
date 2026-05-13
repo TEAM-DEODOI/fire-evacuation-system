@@ -295,18 +295,18 @@ if __name__ == "__main__":
     exits = exit_positions()
     print(f"  exits = {[tuple(round(v, 1) for v in e) for e in exits]}")
     net = FixedSignNetwork(risk_map=rm, exit_positions=exits, danger_threshold=0.5)
-    # Agent at (5, 4): nearest is exit_west (~0, ~5). After D-026 the
-    # exit position is the nearest fluid-cell centre (0.25, 4.75, 1.75)
-    # rather than the building.py canonical point (0, 5, 1.5).
+    # Agent at (5, 4): nearest is exit_west, now at (3, 6) -> cell-snap
+    # (2.75, 5.75, 1.75) per shared/building.py (refined 2026-05-14).
     wp_b = net.next_waypoint(np.array([5.0, 4.0, 1.5]), t=0.0)
     print(f"  query (5, 4)  -> {tuple(round(v, 2) for v in wp_b)}")
-    if abs(wp_b[0]) > 0.5 or abs(wp_b[1] - 5.0) > 0.5:
-        errors.append(f"expected near exit_west (~0, ~5), got {wp_b}")
-    # Agent at (28, 16): nearest is exit_east (~30, ~13)
+    if abs(wp_b[0] - 3.0) > 0.5 or abs(wp_b[1] - 6.0) > 0.5:
+        errors.append(f"expected near exit_west (~3, ~6), got {wp_b}")
+    # Agent at (28, 16): nearest is exit_east, now at (22, 6) -> cell-snap
+    # (21.75, 5.75, 1.75)
     wp_e = net.next_waypoint(np.array([28.0, 16.0, 1.5]), t=0.0)
     print(f"  query (28, 16) -> {tuple(round(v, 2) for v in wp_e)}")
-    if abs(wp_e[0] - 30.0) > 0.5 or abs(wp_e[1] - 13.0) > 0.5:
-        errors.append(f"expected near exit_east (~30, ~13), got {wp_e}")
+    if abs(wp_e[0] - 22.0) > 0.5 or abs(wp_e[1] - 6.0) > 0.5:
+        errors.append(f"expected near exit_east (~22, ~6), got {wp_e}")
 
     # ── 3. Zero-risk smoke: non-existent fds_dir -> fallback ─────────
     print("\n[3] run() smoke: 5 agents, 60 s, no FDS (fallback to zero risk)")

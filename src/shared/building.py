@@ -191,10 +191,13 @@ _DEFAULT_NODES: List[Tuple[str, float, float, NodeType, bool]] = [
     # Intersections
     ("int_north", 12.0, 14.0, "intersection", False),
     ("int_south", 15.0,  5.0, "intersection", False),
-    # Exits
-    ("exit_west",  0.0,  5.0, "exit", True),
-    ("exit_north", 8.0, 18.0, "exit", True),
-    ("exit_east", 30.0, 13.0, "exit", True),
+    # Exits (positions refined 2026-05-14 against the real STL --
+    # the legacy (0, 5) / (8, 18) / (30, 13) tuples were the Day-2
+    # prompt's idealized boundary points and did not correspond to
+    # actual doorways in science_hall_lv5.stl).
+    ("exit_west",   3.0,  6.0, "exit", True),
+    ("exit_north", 15.0, 17.0, "exit", True),
+    ("exit_east",  22.0,  6.0, "exit", True),
 ]
 
 _DEFAULT_EDGES: List[Tuple[str, str]] = [
