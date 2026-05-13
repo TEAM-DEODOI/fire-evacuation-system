@@ -190,9 +190,14 @@
 **경로**: `figures/current/03_sparse_interpolation/snapshot_T05_geodesic.png`
 6-panel: truth + linear + geodesic + 2 error map + mask.
 
-### Paper Figure 6 — 60s autoregress 비교
+### Paper Figure 6 — 60s autoregress 4-model 비교
 **경로**: `figures/current/05_future_prediction/sim_1500kw_2m2_T05_grid_t0_120.png`
 4 row (truth/ConvLSTM/FNO no-PI/FNO PI) × 6 col (10s..60s).
+
+### Paper Figure 7 — 60s autoregress **5-model** 비교 (L4e 포함)
+**경로**: `figures/current/05_future_prediction/<scenario>_grid_5model_t0_120.png` (3 시나리오)
+5 row (+ Sparse-ConvLSTM L4e) × 6 col.
+→ **L4e 의 conservative bias** 시각적으로 명확히 보임 (시간 지나며 도메인 전체가 빨강 saturate).
 
 ---
 

@@ -213,11 +213,26 @@ PI loss components (curriculum learning, weight ramp):
 → **재학습이 IoU 측면에서는 손해**. FNO no-PI + geodesic 이 Tier 2 best.
 → **재학습의 가치는 FNR 0% (over-cautious bias)** — paper limitation 으로 명시.
 
-### 6.5 결론
+### 6.5 시각화 — Conservative Bias 명확히 보임
+
+`figures/current/05_future_prediction/<scenario>_grid_5model_t0_120.png` (3개):
+5-row grid (FDS truth + ConvLSTM + FNO no-PI + FNO PI + **L4e Sparse ConvLSTM**)
+× 6 col (t₀+10s ~ +60s).
+
+**관찰**:
+- Row 1-4 (full-input 모델들): truth 와 시각적으로 유사
+- **Row 5 (L4e Sparse)**: t₀+10s 에서는 일부만 위험 → **시간 지나며 도메인 전체 빨강 saturate**
+- 약한 화재 (T01 500kW) 일수록 conservative bias 가 더 극단적
+
+→ "위험 영역 식별" 보다 "위험 영역 누락 안 함" 우선시 하는 학습 결과.
+생성 스크립트: `scripts/visualize_60s_5model.py`
+
+### 6.6 결론
 
 Sparse-input retrain 자체는 H5 (IoU ≥ 0.70) 달성 못 함. 단:
 - **Conservative output 의 한 사례** — safety-critical regime 에서 valuable
 - Sparse signal 의 fundamental information bottleneck 확인
+- 5-row 비교 figure 가 paper 의 *limitation + safety discussion* 의 visual evidence
 - **Tier 1 GNN (IoU 0.90) 이 여전히 best deployment 선택지**
 
 ---
