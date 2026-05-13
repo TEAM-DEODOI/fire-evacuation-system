@@ -33,6 +33,7 @@
 | L4e Sparse-retrain ConvLSTM (no re-sparsify) | Sparse ConvLSTM | 0.182 | 0.0% (conservative) | 0.71 | ❌ | ✅ |
 | **L4e Sparse-retrain + re-sparsify ★** | **Sparse ConvLSTM** | **0.581** | 23.0% | 0.12 | ❌ | ❌ |
 | **L4e' Sparse FNO 6-ch + re-sparsify ★** | **Sparse FNO** | **0.525** | **10.4%** ★ | 0.16 | ❌ (4/13 ✅) | ⚠ close |
+| **L4g Tier1+Tier2 Ensemble (w_t1=0.6)** | **GNN + Sparse FNO** | **0.576** | **4.8%** ✅ | — | ❌ (4-5/13 ✅) | ✅ H4 |
 | **L4f Tier 1 GNN binary** | **SimpleFireGNN** | **0.904** ★ | **4.6%** | — | **✅** | **✅** |
 
 ---
