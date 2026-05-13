@@ -47,9 +47,16 @@ from src.shared.constants import (
 
 # ─── Model loading ──────────────────────────────────────────────────────────
 def load_model(ckpt: Path, device: torch.device) -> FireConvLSTM:
-    state = torch.load(ckpt, map_location=device)
+    # weights_only=False — own-trained checkpoint (PyTorch 2.6+ default change)
+    state = torch.load(ckpt, map_location=device, weights_only=False)
     if isinstance(state, dict) and "model" in state:
         state = state["model"]
+    # _metadata round-trip fix (PyTorch 2.6+ serialization quirk)
+    if "_metadata" in state:
+        try:
+            state._metadata = state.pop("_metadata")
+        except Exception:
+            state.pop("_metadata", None)
     model = FireConvLSTM(
         in_channels=5, out_channels=3, hidden_dim=32,
         kernel_size=(3, 3, 3), num_layers=2,

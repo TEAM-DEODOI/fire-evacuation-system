@@ -42,7 +42,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, TensorDataset, random_split
 
 from src.models.fno_model import FNOFireModel, build_default_fno
-from src.models.pi_losses import PIFNOLoss
+from src.models.pi_losses import CURRICULUM_STAGES, PIFNOLoss
 
 
 def create_mock_dataset(
@@ -237,8 +237,21 @@ def main() -> int:
 
     if args.resume and args.resume.exists():
         print(f"체크포인트 로드: {args.resume}")
-        ckpt = torch.load(args.resume, map_location=device)
-        model.load_state_dict(ckpt["model"])
+        # PyTorch 2.6+ defaults to weights_only=True, but our FNO checkpoint
+        # carries module references (neuralop's GELU activation) that fail the
+        # restricted unpickler. Loading our own trained checkpoint is safe.
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+        model_state = ckpt["model"]
+        # In PyTorch 2.6+ serialization, the OrderedDict's ``_metadata``
+        # attribute (version-warning info) is sometimes round-tripped as a
+        # regular key. Strip it before strict load. Re-attach as attribute so
+        # ``load_state_dict`` still has access to deprecation metadata.
+        if "_metadata" in model_state:
+            try:
+                model_state._metadata = model_state.pop("_metadata")
+            except Exception:
+                model_state.pop("_metadata", None)
+        model.load_state_dict(model_state)
 
     optimizer = AdamW(
         model.parameters(),

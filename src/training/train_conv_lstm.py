@@ -188,7 +188,15 @@ def train(
         num_layers=int(m_cfg["num_layers"]),
     )
     if resume_from is not None:
-        state = torch.load(resume_from, map_location="cpu")
+        # weights_only=False — own-trained checkpoint, trusted (PyTorch 2.6+ default change)
+        state = torch.load(resume_from, map_location="cpu", weights_only=False)
+        # _metadata may be round-tripped as a regular key in PyTorch 2.6+;
+        # re-attach as attribute so strict load passes.
+        if isinstance(state, dict) and "_metadata" in state:
+            try:
+                state._metadata = state.pop("_metadata")
+            except Exception:
+                state.pop("_metadata", None)
         model.load_state_dict(state)
         print(f"resumed from {resume_from}")
 
