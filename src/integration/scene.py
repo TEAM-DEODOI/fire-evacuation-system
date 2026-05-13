@@ -282,6 +282,32 @@ if __name__ == "__main__":
     else:
         errors.append("missing URDF did not raise")
 
+    # ── 8. Placeholder building URDF loads (M1 smoke) ──────────────────
+    print("\n[8] Placeholder building URDF loads (if present)")
+    ph = Path("assets/placeholder_building.urdf")
+    if ph.exists():
+        with Scene.create(
+            SceneConfig(connection_mode="DIRECT", building_urdf=ph)
+        ) as s3:
+            if s3.building_id is None:
+                errors.append("building_id is None after URDF load")
+            else:
+                aabb_min, aabb_max = p.getAABB(
+                    s3.building_id, physicsClientId=s3.client
+                )
+                print(
+                    f"  building_id={s3.building_id}  "
+                    f"AABB min={tuple(round(v, 2) for v in aabb_min)}  "
+                    f"max={tuple(round(v, 2) for v in aabb_max)}"
+                )
+                if aabb_max[0] < 25.0 or aabb_max[1] < 15.0:
+                    errors.append(
+                        "placeholder AABB too small -- building did not load"
+                    )
+                print("  PASS")
+    else:
+        print(f"  SKIP: {ph} not present; run urdf_builder.py first")
+
     # ── Verdict ────────────────────────────────────────────────────────
     if errors:
         print("\nFAIL")
