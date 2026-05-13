@@ -479,6 +479,179 @@ def render_animation(
     return out_path
 
 
+def render_comparison_animation(
+    recorders: Sequence[SimulationRecorder],
+    out_path: Path,
+    *,
+    fluid_mask: Optional[np.ndarray] = None,
+    risk_map: Optional[object] = None,
+    fps: int = 8,
+    dpi: int = 90,
+    dt_s: float = 1.0,
+) -> Path:
+    """Side-by-side animated GIF: one panel per recorder, common timeline.
+
+    Frames are sampled on a uniform time grid spanning
+    ``[min(rec.frames[0].t), max(rec.frames[-1].t)]``. For each panel the
+    closest recorder frame to the timeline tick is rendered; scenarios
+    that finished early visually hold on their final state while others
+    continue (so the H6 trade-off "S2 finished, S1 still struggling"
+    reads instantly).
+
+    Args:
+        recorders: Two or more :class:`SimulationRecorder` instances.
+            One panel per recorder, in order.
+        out_path: Destination ``.gif``.
+        fluid_mask: Optional ``(60, 40, 6)`` boolean for the building.
+        risk_map: Optional :class:`RiskMap` -- when supplied, every
+            frame's overlay is sampled at the panel's effective time
+            so all panels share the same risk evolution.
+        fps: GIF framerate.
+        dpi: Output DPI.
+        dt_s: Timeline step (seconds).
+    """
+    if not recorders:
+        raise ValueError("recorders must not be empty")
+    for rec in recorders:
+        if not rec.frames:
+            raise ValueError(
+                f"recorder {rec.scenario_id!r} has no frames"
+            )
+
+    from matplotlib.animation import FuncAnimation, PillowWriter
+
+    t_min = min(rec.frames[0].t for rec in recorders)
+    t_max = max(rec.frames[-1].t for rec in recorders)
+    times = np.arange(t_min, t_max + dt_s * 0.5, dt_s)
+
+    n = len(recorders)
+    fig, axes = plt.subplots(1, n, figsize=(6.0 * n, 6.0))
+    if n == 1:
+        axes = [axes]
+
+    # Static layers: mask + exits + axes style (once per panel).
+    for ax in axes:
+        _draw_building_footprint(ax, fluid_mask)
+        _draw_exits(ax)
+        _style_axes(ax, title="")
+
+    # Per-panel persistent artists.
+    panel_state = []
+    for rec, ax in zip(recorders, axes):
+        markers: dict = {}
+        trails: dict = {}
+        for aid in rec.agent_ids():
+            (m,) = ax.plot([], [], "o", markersize=8,
+                           color=_STATUS_COLOR["alive"],
+                           markeredgecolor="black", markeredgewidth=0.6, zorder=5)
+            (l,) = ax.plot([], [], "-", color=_STATUS_COLOR["alive"],
+                           lw=1.2, alpha=0.5, zorder=3)
+            markers[aid] = m
+            trails[aid] = l
+        panel_state.append({
+            "rec": rec,
+            "ax": ax,
+            "markers": markers,
+            "trails": trails,
+            "overlay": [],
+            # Precomputed trajectory and per-frame index lookup.
+            "frame_t": np.asarray([fr.t for fr in rec.frames]),
+        })
+
+    def _nearest_frame_idx(frame_ts: np.ndarray, t: float) -> int:
+        # frame_ts is monotonically increasing.
+        i = int(np.searchsorted(frame_ts, t))
+        if i >= len(frame_ts):
+            return len(frame_ts) - 1
+        if i == 0:
+            return 0
+        # pick the closer of i-1 and i
+        if abs(frame_ts[i] - t) < abs(frame_ts[i - 1] - t):
+            return i
+        return i - 1
+
+    cmap = LinearSegmentedColormap.from_list(
+        "risk_overlay",
+        [(1, 1, 1, 0), (1, 0.85, 0, 0.55), (0.85, 0, 0, 0.85)],
+        N=256,
+    )
+
+    def update(i: int):
+        t = float(times[i])
+        artists = []
+        # Shared risk grid (sampled once per timeline tick if risk_map given).
+        shared_grid = None
+        if risk_map is not None:
+            shared_grid = _sample_risk_grid(risk_map, t)
+        for st in panel_state:
+            rec = st["rec"]
+            ax = st["ax"]
+            idx = _nearest_frame_idx(st["frame_t"], t)
+            frame = rec.frames[idx]
+            # Risk overlay -- recorder-cached preferred, else shared sample.
+            for img in st["overlay"]:
+                img.remove()
+            st["overlay"].clear()
+            grid = frame.risk_grid if frame.risk_grid is not None else shared_grid
+            if grid is not None:
+                lx, ly, _lz = DOMAIN_SIZE_M
+                img = ax.imshow(
+                    grid.T, cmap=cmap, alpha=0.55,
+                    extent=(0.0, lx, 0.0, ly), origin="lower",
+                    vmin=0.0, vmax=1.0, zorder=1,
+                )
+                st["overlay"].append(img)
+                artists.append(img)
+            # Title with this panel's effective frame.
+            n_evac_so_far = sum(
+                1 for ag in frame.agents if ag.arrived or ag.status == "evacuated"
+            )
+            n_total = len(rec.agent_ids())
+            ax.set_title(
+                f"{rec.scenario_id}  t={frame.t:.0f}s  "
+                f"evac={n_evac_so_far}/{n_total}",
+                fontsize=10,
+            )
+            # Agents
+            for ag in frame.agents:
+                color = _STATUS_COLOR.get(ag.status, _STATUS_COLOR["unknown"])
+                m = st["markers"].get(ag.agent_id)
+                if m is not None:
+                    m.set_data([ag.pos[0]], [ag.pos[1]])
+                    m.set_color(color)
+                    artists.append(m)
+                # Trail (up to idx)
+                xs, ys = [], []
+                for fr2 in rec.frames[: idx + 1]:
+                    for a2 in fr2.agents:
+                        if a2.agent_id == ag.agent_id:
+                            xs.append(a2.pos[0])
+                            ys.append(a2.pos[1])
+                            break
+                l = st["trails"].get(ag.agent_id)
+                if l is not None:
+                    l.set_data(xs, ys)
+                    l.set_color(color)
+                    artists.append(l)
+        fig.suptitle(
+            f"timeline t={t:.0f}s  (tick {i + 1}/{len(times)})",
+            fontsize=12, y=1.005,
+        )
+        return artists
+
+    ani = FuncAnimation(
+        fig, update, frames=len(times),
+        interval=1000 / max(fps, 1), blit=False,
+    )
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    writer = PillowWriter(fps=fps)
+    ani.save(out_path, writer=writer, dpi=dpi)
+    plt.close(fig)
+    return out_path
+
+
 # ─── Risk-grid sampler (avoid circular import in recorder) ────────────────
 def _sample_risk_grid(risk_map: object, t: float) -> np.ndarray:
     nx_, ny_, _ = GRID_SHAPE
@@ -586,6 +759,18 @@ if __name__ == "__main__":
         )
         if not out.exists():
             errors.append("animation GIF missing")
+        else:
+            size_kb = out.stat().st_size / 1024
+            print(f"  PASS: wrote {out.name} ({size_kb:.1f} KB)")
+
+    # ── 7. render_comparison_animation 3-panel GIF ────────────────
+    print("\n[7] render_comparison_animation 3-panel side-by-side GIF")
+    with tempfile.TemporaryDirectory() as td:
+        out = render_comparison_animation(
+            [rec, rec2, rec3], Path(td) / "cmp_anim.gif", fps=5, dpi=60,
+        )
+        if not out.exists():
+            errors.append("comparison animation GIF missing")
         else:
             size_kb = out.stat().st_size / 1024
             print(f"  PASS: wrote {out.name} ({size_kb:.1f} KB)")

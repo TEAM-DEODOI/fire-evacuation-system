@@ -40,6 +40,7 @@ from src.integration.recorder import SimulationRecorder
 from src.integration.renderer import (
     render_animation,
     render_comparison,
+    render_comparison_animation,
     render_trajectories,
 )
 from src.integration.scenarios import s1_fixed_sign, s2_fds_swarm, s3_fno_swarm
@@ -216,6 +217,21 @@ def main() -> int:
                 f"  wrote {gif}  ({gif.stat().st_size/1024:.0f} KB, "
                 f"{dt:.1f}s wall)"
             )
+        # 3-panel side-by-side GIF -- most informative for H6 reading.
+        t0 = time.perf_counter()
+        gif = render_comparison_animation(
+            [rec_s1, rec_s2, rec_s3],
+            out_dir / "comparison.gif",
+            fluid_mask=fluid_mask,
+            risk_map=render_risk,
+            fps=args.fps,
+            dt_s=args.dt,
+        )
+        dt = time.perf_counter() - t0
+        print(
+            f"  wrote {gif}  ({gif.stat().st_size/1024:.0f} KB, "
+            f"{dt:.1f}s wall)"
+        )
 
     print(f"\nDone -- see {out_dir}/")
     return 0
