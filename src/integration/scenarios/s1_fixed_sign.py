@@ -14,18 +14,22 @@ Setup:
 This is the **H6 baseline**: if drone-swarm guidance (S2) gives at
 least a 30 % FED reduction relative to this, H6 passes.
 
-**Status (2026-05-14, M3-mini):**
+**Status (2026-05-14, M3-α):**
 
 * :class:`FixedSignNetwork.next_waypoint` -- **functional** (degenerate
   form: every exit acts as both sign and target; intermediate
   ``sign_positions`` are M3-full work).
-* :func:`run` -- **functional, no-fire**. Builds Scene + placeholder
-  building + N agents at room-node centres, runs them through
-  ``step_toward`` until they reach an exit or ``t_end_s`` elapses, then
-  emits a :class:`~src.integration.metrics.ScenarioMetrics` row with
-  the 3 fire-dependent metrics (``danger_zone_exposure_time``,
-  ``casualty_rate``, ``cumulative_FED``) all 0. Real FDS RiskMap +
-  PersonAgent status machine + FED accumulation are M3-full.
+* :func:`run` -- **functional with FDS RiskMap**. Builds Scene +
+  placeholder building + N agents at room-node centres, loads the
+  truth :class:`StaticRiskMap` from ``fds_dir`` (cached to
+  ``results/cache/s1_risk_maps/<scenario>.npz`` for fast re-runs),
+  walks agents until exit or ``t_end_s``, accumulates per-agent
+  ``danger > 0.5`` exposure time, and emits a
+  :class:`~src.integration.metrics.ScenarioMetrics` row.
+* ``casualty_rate`` and ``cumulative_FED`` still **0** -- they require
+  the status-machine and CO-grid loading which are M2-full / M3-full.
+* If ``fds_dir`` is missing or fails to parse, falls back to an
+  all-zero risk map (no exposure accumulation) with a clear warning.
 """
 from __future__ import annotations
 
@@ -113,14 +117,79 @@ class FixedSignNetwork:
 
 
 # ─── Internal helpers ─────────────────────────────────────────────────────
+_CACHE_DIR = Path("results/cache/s1_risk_maps")
+
+
 def _zero_risk_map() -> StaticRiskMap:
-    """All-safe risk map. M3-mini placeholder until FDS load is wired in."""
+    """All-safe risk map. Fallback when no FDS data is available."""
     nx_, ny_, nz_ = GRID_SHAPE
     times = np.arange(0.0, N_TIMESTEPS * DT_SLCF, DT_SLCF)
     return StaticRiskMap(
         danger_array=np.zeros((N_TIMESTEPS, nx_, ny_, nz_), dtype=np.float32),
         times=times,
     )
+
+
+def _load_truth_risk_map(fds_dir: Path, verbose: bool = True) -> RiskMap:
+    """Try to build a real :class:`StaticRiskMap` from ``fds_dir``.
+
+    Caches the resulting ``(danger, times)`` to
+    ``results/cache/s1_risk_maps/<scenario>.npz`` (created on first
+    successful load) so re-runs skip the fdsreader cost.
+
+    Returns the zero risk map if ``fds_dir`` is missing, empty, or
+    fails to parse -- in that case callers see ``exposure`` = 0 and
+    a clear warning on stdout.
+    """
+    cache_key = fds_dir.name if fds_dir.name else "_unnamed"
+    cache_path = _CACHE_DIR / f"{cache_key}.npz"
+
+    if cache_path.exists():
+        try:
+            if verbose:
+                print(f"  [risk_map] cache hit: {cache_path}")
+            return StaticRiskMap.from_npy(cache_path)
+        except Exception as exc:  # noqa: BLE001
+            if verbose:
+                print(
+                    f"  [risk_map] cache read failed ({cache_path}): {exc}; "
+                    f"re-loading from FDS"
+                )
+
+    if not fds_dir.exists():
+        if verbose:
+            print(
+                f"  [risk_map] FDS dir missing ({fds_dir}); "
+                f"falling back to zero risk"
+            )
+        return _zero_risk_map()
+
+    try:
+        if verbose:
+            print(
+                f"  [risk_map] loading FDS RiskMap from {fds_dir} "
+                f"(first call: ~30 s)"
+            )
+        rm = StaticRiskMap.from_fds_dir(fds_dir)
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            print(
+                f"  [risk_map] FDS load failed ({exc.__class__.__name__}: {exc}); "
+                f"falling back to zero risk"
+            )
+        return _zero_risk_map()
+
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        rm.save(cache_path)
+        if verbose:
+            size_kb = cache_path.stat().st_size / 1024
+            print(f"  [risk_map] cached -> {cache_path} ({size_kb:.0f} KB)")
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            print(f"  [risk_map] cache write failed: {exc}")
+
+    return rm
 
 
 def _spawn_agents(
@@ -213,18 +282,24 @@ def run(
     scene = Scene.create(cfg)
     try:
         obstacles = [scene.building_id]
-        risk_map = _zero_risk_map()
+        truth_rm = _load_truth_risk_map(fds_dir, verbose=True)
         exits_xyz = _exit_positions()
         agents = _spawn_agents(scene, n_persons, seed)
         n_actual = len(agents)
+        # Per fairness setup (interface_contracts.md sect. 6) the planner
+        # and the experienced truth use the SAME RiskMap in S1. Drone
+        # scenarios (S2/S3) will pass separate planner_rm and truth_rm.
         provider = FixedSignNetwork(
-            risk_map=risk_map,
+            risk_map=truth_rm,
             exit_positions=exits_xyz,
             danger_threshold=0.5,
         )
 
         arrived: Dict[str, float] = {}
+        # Per-agent accumulated time in danger > 0.5 zone.
+        exposure_s: Dict[str, float] = {a.agent_id: 0.0 for a in agents}
         max_steps = int(math.ceil(t_end_s / dt_s)) + 5
+        danger_threshold = 0.5
         for _ in range(max_steps):
             t_now = float(scene.t)
             if t_now >= t_end_s:
@@ -241,6 +316,15 @@ def run(
                     dt_s,
                     obstacle_body_ids=obstacles,
                 )
+                # Accumulate exposure at the post-move position. The
+                # truth map is the same instance the FixedSignNetwork
+                # consults but we re-query independently here so the
+                # exposure metric remains correct under future S2/S3
+                # planner/truth splits.
+                danger = float(truth_rm.query(agent.position, t=t_now))
+                if danger > danger_threshold:
+                    exposure_s[agent.agent_id] += float(dt_s)
+
                 # Arrived if within tolerance of *any* exit (XY only).
                 for ex in exits_xyz:
                     if (
@@ -259,6 +343,9 @@ def run(
             mean_evac_time = float(np.mean(list(arrived.values())))
         else:
             mean_evac_time = float("nan")
+        mean_exposure = (
+            float(np.mean(list(exposure_s.values()))) if exposure_s else 0.0
+        )
 
         return ScenarioMetrics(
             scenario_id="S1_fixed_sign",
@@ -267,9 +354,9 @@ def run(
             n_persons=n_actual,
             evacuation_success_rate=success_rate,
             mean_evacuation_time_s=mean_evac_time,
-            danger_zone_exposure_time_s=0.0,  # M3-mini: no fire
-            casualty_rate=0.0,                 # M3-mini: no status machine
-            cumulative_fed=0.0,                # M3-mini: no FED accumulator
+            danger_zone_exposure_time_s=mean_exposure,
+            casualty_rate=0.0,    # M3-α: status machine is M2-full
+            cumulative_fed=0.0,   # M3-α: CO-grid load is M3-full
         )
     finally:
         scene.close()
@@ -280,7 +367,7 @@ if __name__ == "__main__":
     import sys
 
     print("=" * 60)
-    print("s1_fixed_sign.py self-test (M3-mini)")
+    print("s1_fixed_sign.py self-test (M3-alpha: FDS RiskMap + exposure)")
     print("=" * 60)
 
     errors: list[str] = []
@@ -311,11 +398,11 @@ if __name__ == "__main__":
     if abs(wp_e[0] - 30.0) > 1e-6 or abs(wp_e[1] - 13.0) > 1e-6:
         errors.append(f"expected exit_east (30, 13), got {wp_e}")
 
-    # ── 3. Full run smoke: 5 agents, 60 s, no fire ─────────────────────
-    print("\n[3] run() smoke: 5 agents, 60 s, no fire")
+    # ── 3. Zero-risk smoke: non-existent fds_dir -> fallback ─────────
+    print("\n[3] run() smoke: 5 agents, 60 s, no FDS (fallback to zero risk)")
     result = run(
         fire_scenario_id="m3_mini_smoke",
-        fds_dir=Path("data/raw/sim_1500kw_2m2_T05"),  # ignored in M3-mini
+        fds_dir=Path("data/raw/__no_such_scenario__"),  # forces fallback
         n_persons=5,
         seed=0,
         t_end_s=60.0,
@@ -372,10 +459,77 @@ if __name__ == "__main__":
         errors.append("to_dict lost scenario_id")
     print(f"  keys = {sorted(d)}")
 
+    # ── 6. Real FDS RiskMap: verify load + run + report exposure ───────
+    real_fds = Path("data/raw/sim_1500kw_2m2_T05")
+    if real_fds.exists():
+        print(
+            "\n[6a] Load FDS RiskMap and probe peak danger field"
+        )
+        truth = _load_truth_risk_map(real_fds, verbose=True)
+        # Probe a 5x5 grid in the central courtyard area at t=120s.
+        peak_seen = 0.0
+        for x in np.linspace(5.0, 25.0, 5):
+            for y in np.linspace(3.0, 17.0, 5):
+                d = float(truth.query(np.array([x, y, 1.5]), t=120.0))
+                peak_seen = max(peak_seen, d)
+        print(f"  peak danger seen in 5x5 probe at t=120s: {peak_seen:.3f}")
+        if peak_seen < 0.3:
+            errors.append(
+                f"FDS RiskMap peak {peak_seen:.3f} is suspiciously low; "
+                f"load may have failed silently"
+            )
+        else:
+            print(
+                f"  PASS: FDS load is live "
+                f"(peak {peak_seen:.3f} > 0.3 threshold)"
+            )
+
+        print(
+            "\n[6b] run() with real FDS, t_end=200 s -- exposure may or may"
+            " not be > 0 depending on where stuck agents end up"
+        )
+        try:
+            real_result = run(
+                fire_scenario_id="sim_1500kw_2m2_T05",
+                fds_dir=real_fds,
+                n_persons=5,
+                seed=0,
+                t_end_s=200.0,
+                dt_s=1.0,
+            )
+            print(f"  {real_result.summary_line()}")
+            if real_result.scenario_id != "S1_fixed_sign":
+                errors.append("real-FDS scenario_id wrong")
+            # No hard assertion on exposure: with this small building +
+            # zero-planner pathing, evacuation completes in ~5 s for
+            # agents that can reach an exit, and stuck agents stay in
+            # their starting room (whose local danger depends on fire
+            # location -- T05 is north-side and stuck agents are
+            # south-east, so exposure can legitimately be 0).
+            #
+            # The structural test [6a] already confirmed the FDS load
+            # works; this run is reported for the record.
+            if real_result.danger_zone_exposure_time_s > 0:
+                print(
+                    f"  exposure {real_result.danger_zone_exposure_time_s:.1f}s "
+                    f"> 0: at least one agent traversed a >0.5 danger cell"
+                )
+            else:
+                print(
+                    "  exposure=0: no agent's path crossed a >0.5 danger "
+                    "cell (consistent with stuck-in-zone-d, fire-in-north)"
+                )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"real-FDS run crashed: {exc}")
+    else:
+        print(
+            f"\n[6] SKIP: real FDS scenario {real_fds} not on disk"
+        )
+
     # ── Verdict ────────────────────────────────────────────────────
     if errors:
         print("\nFAIL")
         for e in errors:
             print(f"  - {e}")
         sys.exit(1)
-    print("\nPASS: s1_fixed_sign M3-mini validated")
+    print("\nPASS: s1_fixed_sign M3-alpha validated")

@@ -165,6 +165,9 @@ figures/**/*.mp4
 # ─────────────────────────────────────────────────────────────────────────
 results/*.csv
 results/*.json
+
+# Derived caches (regenerated from FDS on demand by src/integration/scenarios/)
+results/cache/
 !results/.gitkeep
 
 # Application logs
