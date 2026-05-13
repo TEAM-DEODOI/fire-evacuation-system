@@ -214,3 +214,62 @@ gap* 으로. 더 강한 contribution.
 ---
 
 > *세션은 사용자의 두 번의 정확한 재정의로 본 프로젝트의 진짜 contribution 영역을 발견. Plan B 가 paper 를 더 강하게 만들어줌.*
+
+---
+
+## 9. 세션 끝 보강 — Tier 1/2 통합 framing + D-024 27 감지기 인프라
+
+세션 마무리 직후 사용자가 3 개의 외부 계획 문서 전달:
+- `docs/tier1_detector_plan.md` — Tier 1 GNN 의 감지기 모델 통합 계획
+- `docs/tier1_detector_task.md` — D-023 트리거 모델 (다음 세션 task)
+- `docs/tier1_detector_positions_task.md` — D-024 감지기 위치 (이번 세션 구현)
+
+### 9.1 핵심 명확화 — Tier 1 / Tier 2 공유 인프라
+
+사용자: *"여기서 정의한 센서의 위치는 tier 2 에서도 그대로 쓸거야"*
+
+이전 세션 framing 정정:
+- **이전**: Track 1 (intelligent) vs Track 2 (legacy) = 별개 deployment
+- **수정**: **같은 27개 감지기 인프라, 두 가지 신호 모드**
+  - Tier 1 (GNN): binary on/off (D-023 트리거)
+  - Tier 2 (ConvLSTM/FNO): continuous T/V/CO
+
+### 9.2 D-024 구현 (본 세션 추가 작업)
+
+- `src/tier1/detector_positions.py` 작성 (27개 감지기)
+- Self-test 9개 모두 PASS
+- 영역 분포: Zone A=3, B=5, C=4, D=5, 복도=7, 출구=3
+- 모두 z=2.5m, NFPA 72 spacing max 7m
+- `docs/decisions.md` 에 D-024 추가
+- 문서 vs 구현 불일치 해결: task §1 "28개" 는 typo, **실제 27개** (Zone 표 정확)
+
+### 9.3 본 세션 sparse 평가의 재해석
+
+지금까지의 sparse 평가는 **16개 임시 위치** 기반. **다음 세션에서 D-024 27개로 재평가 필요**:
+
+| Layer | 16-sensor 결과 | 27-sensor 예상 |
+|---|---|---|
+| L4d (geodesic) | 0.41 | **↑ 예상** (sensor 11개 추가, 복도/출구 cover) |
+| L4e (sparse retrain) | 0.20 (5ep) | **↑ 예상** + full 학습 |
+
+### 9.4 다음 세션 plan — 업데이트
+
+1. **D-023 구현** (`src/tier1/detector_model.py` + `scripts/visualize_detectors.py`) — `docs/tier1_detector_task.md` 명세
+2. **first_sim + T01-T05 에 D-023 적용** — binary_sequence.npy 생성
+3. **27-sensor sparse 재평가** — Track 1A/1A.5/1B 재실행
+4. **Tier 1 GNN 학습** — `src/tier1/dataset.py` + `train_tier1.train()` 구현
+5. **Tier 1 vs Tier 2 비교** — paper headline 표
+6. **Path planning + H6** — `src/path_planning/` + EXP-PATH-001
+
+### 9.5 갱신된 Paper Framing
+
+> **"단일 건물 인프라 (27개 표준 화재 감지기) 위에 두 가지 surrogate
+> fire-prediction 시스템 제안 — Tier 1 (binary signal → graph network,
+> legacy 호환) + Tier 2 (continuous signal → spatial neural operator,
+> intelligent sensors). 두 시스템 모두 NFPA 72 / UL 268 / KOFEIS 0301
+> 표준의 보수적 임계값 사용, 추가 하드웨어 없이 기존 건물에 즉시 적용
+> 가능. Evaluation layers L1→L4 가 'ideal upper bound vs realistic
+> deployment' 격차를 정량화."**
+
+이 framing 이 H1/H2/H4/H5 통과 + H3 실패 (Plan B) + cold-start +
+sparse gap 발견 + 27-sensor 통합 인프라 모두를 하나로 묶음.
