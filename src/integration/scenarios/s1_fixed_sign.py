@@ -1,51 +1,73 @@
-"""Scenario S1 — Fixed-sign baseline (D-025 H6 baseline).
+"""Scenario S1 -- Fixed-sign baseline (D-025 H6 baseline).
 
 Setup:
 
-* 20 :class:`~src.integration.person_agent.PersonAgent` spawned at
-  random positions inside the building.
-* Static "exit signs" pre-placed at corridor intersections that show
-  the nearest exit assuming no fire.
-* No drones. Persons individually query
-  :class:`~src.risk_map.risk_map_class.RiskMap` (FDS truth here) to
-  detect hazard and choose the nearest *non-hazardous* sign as their
-  next waypoint.
-* FED accumulation, status transitions, and metric collection happen
-  identically to S2/S3 — only the WaypointProvider differs.
+* N :class:`~src.integration.person_agent.PersonAgent` spawned at random
+  positions inside the building's room nodes.
+* Static "exit signs" pre-placed at corridor intersections. Each agent
+  queries the sign network for the nearest exit whose pointed-at
+  position is currently non-hazardous (per
+  :class:`~src.risk_map.risk_map_class.RiskMap`), then walks toward it.
+* No drones. FED accumulation, status transitions, and metric collection
+  happen identically to S2/S3 -- only the WaypointProvider differs.
 
 This is the **H6 baseline**: if drone-swarm guidance (S2) gives at
 least a 30 % FED reduction relative to this, H6 passes.
 
-**Status: skeleton.** Run loop pending.
+**Status (2026-05-14, M3-mini):**
+
+* :class:`FixedSignNetwork.next_waypoint` -- **functional** (degenerate
+  form: every exit acts as both sign and target; intermediate
+  ``sign_positions`` are M3-full work).
+* :func:`run` -- **functional, no-fire**. Builds Scene + placeholder
+  building + N agents at room-node centres, runs them through
+  ``step_toward`` until they reach an exit or ``t_end_s`` elapses, then
+  emits a :class:`~src.integration.metrics.ScenarioMetrics` row with
+  the 3 fire-dependent metrics (``danger_zone_exposure_time``,
+  ``casualty_rate``, ``cumulative_FED``) all 0. Real FDS RiskMap +
+  PersonAgent status machine + FED accumulation are M3-full.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 
 from src.integration.metrics import ScenarioMetrics
-from src.risk_map.risk_map_class import RiskMap
+from src.integration.person_agent import PersonAgent
+from src.integration.scene import Scene, SceneConfig
+from src.path_planning.building_graph import build_graph, exit_nodes
+from src.risk_map.risk_map_class import RiskMap, StaticRiskMap
+from src.shared.constants import DT_SLCF, GRID_SHAPE, N_TIMESTEPS
+
+
+_PLACEHOLDER_URDF = Path("assets/placeholder_building.urdf")
 
 
 # ─── Fixed-sign provider ──────────────────────────────────────────────────
 @dataclass
 class FixedSignNetwork:
-    """The static-sign equivalent of a :class:`WaypointProvider`.
+    """Static-sign equivalent of a WaypointProvider for S1.
 
-    The network is a fixed list of sign positions and, for each sign, a
-    list of candidate exit waypoints in priority order. When a person
-    queries :meth:`next_waypoint`, the network returns the nearest sign
-    whose pointed-at exit is currently non-hazardous (per the FDS truth
-    :class:`RiskMap` it holds). If all signs are hazardous (worst case),
-    returns the absolute-nearest exit and lets the person take its chances.
+    The full intent (M3-full): a network of pre-placed signs at corridor
+    intersections; each sign points to one exit. When a person queries
+    :meth:`next_waypoint`, they walk to the nearest sign whose pointed-at
+    exit is *currently* below ``danger_threshold``, then continue toward
+    the exit from there.
+
+    The M3-mini realization here collapses to "every exit is both sign
+    and target" -- the agent walks straight to the nearest exit whose
+    XYZ position has danger ≤ ``danger_threshold``, falling back to the
+    absolute-nearest exit if all are hazardous. ``sign_positions`` is
+    reserved for M3-full and currently ignored.
     """
 
     risk_map: RiskMap
+    exit_positions: List[np.ndarray] = field(default_factory=list)
     sign_positions: List[np.ndarray] = field(default_factory=list)
-    sign_to_exit: dict = field(default_factory=dict)
     danger_threshold: float = 0.5
 
     def next_waypoint(
@@ -55,12 +77,89 @@ class FixedSignNetwork:
     ) -> Optional[np.ndarray]:
         """Implements :class:`WaypointProvider`.
 
-        Raises:
-            NotImplementedError: pending implementation.
+        Returns the (3,) world position of the chosen exit, or ``None``
+        if no exits are configured.
         """
-        raise NotImplementedError(
-            "Week 12 M2/S1: nearest-sign + RiskMap-aware exit choice."
-        )
+        if not self.exit_positions:
+            return None
+        agent_xy = np.asarray(agent_position, dtype=np.float64)[:2]
+
+        # Pass 1: nearest exit below threshold.
+        best: Optional[np.ndarray] = None
+        best_d2 = math.inf
+        for ex in self.exit_positions:
+            ex_arr = np.asarray(ex, dtype=np.float64)
+            if float(self.risk_map.query(ex_arr, t=t)) > self.danger_threshold:
+                continue
+            dx = ex_arr[0] - agent_xy[0]
+            dy = ex_arr[1] - agent_xy[1]
+            d2 = dx * dx + dy * dy
+            if d2 < best_d2:
+                best_d2 = d2
+                best = ex_arr
+        if best is not None:
+            return best
+
+        # Pass 2: every exit is hazardous -- pick the absolute nearest.
+        for ex in self.exit_positions:
+            ex_arr = np.asarray(ex, dtype=np.float64)
+            dx = ex_arr[0] - agent_xy[0]
+            dy = ex_arr[1] - agent_xy[1]
+            d2 = dx * dx + dy * dy
+            if d2 < best_d2:
+                best_d2 = d2
+                best = ex_arr
+        return best
+
+
+# ─── Internal helpers ─────────────────────────────────────────────────────
+def _zero_risk_map() -> StaticRiskMap:
+    """All-safe risk map. M3-mini placeholder until FDS load is wired in."""
+    nx_, ny_, nz_ = GRID_SHAPE
+    times = np.arange(0.0, N_TIMESTEPS * DT_SLCF, DT_SLCF)
+    return StaticRiskMap(
+        danger_array=np.zeros((N_TIMESTEPS, nx_, ny_, nz_), dtype=np.float32),
+        times=times,
+    )
+
+
+def _spawn_agents(
+    scene: Scene,
+    n_persons: int,
+    seed: int,
+) -> List[PersonAgent]:
+    """Spawn up to ``n_persons`` agents at distinct room-node centres."""
+    graph = build_graph()
+    room_node_ids = [
+        nid for nid, attrs in graph.nodes(data=True)
+        if attrs.get("node_type") == "room"
+    ]
+    if not room_node_ids:
+        raise RuntimeError("building graph has no room nodes")
+
+    rng = np.random.default_rng(seed)
+    n = min(n_persons, len(room_node_ids))
+    chosen = list(rng.choice(room_node_ids, size=n, replace=False))
+
+    agents: List[PersonAgent] = []
+    for i, nid in enumerate(chosen):
+        base = np.asarray(graph.nodes[nid]["pos"], dtype=np.float64)
+        # Small XY jitter so agents don't stack on the exact node coord.
+        jitter = rng.uniform(-0.3, 0.3, size=2)
+        start = np.array([base[0] + jitter[0], base[1] + jitter[1], base[2]])
+        a = PersonAgent(agent_id=f"person_{i}_{nid}")
+        a.spawn(scene.client, start)
+        agents.append(a)
+    return agents
+
+
+def _exit_positions() -> List[np.ndarray]:
+    """All exit-node positions as (3,) arrays."""
+    graph = build_graph()
+    return [
+        np.asarray(graph.nodes[nid]["pos"], dtype=np.float64)
+        for nid in exit_nodes(graph)
+    ]
 
 
 # ─── Run loop ─────────────────────────────────────────────────────────────
@@ -75,26 +174,208 @@ def run(
     """Execute one S1 run and return its :class:`ScenarioMetrics` row.
 
     Args:
-        fire_scenario_id: FDS scenario folder name under ``data/raw/``.
-        fds_dir: Absolute path to the scenario dir (FDS .sf/.smv files).
-        n_persons: Number of PersonAgents. D-025 default 20.
-        seed: RNG seed for starting positions.
-        t_end_s: Maximum simulation time.
-        dt_s: Outer-loop step.
+        fire_scenario_id: FDS scenario label, recorded in the returned
+            row. M3-mini does not actually load this scenario.
+        fds_dir: Path to the FDS scenario folder. Accepted for forward
+            compatibility but currently ignored (M3-mini uses a zero
+            RiskMap; FDS load is M3-full).
+        n_persons: Maximum number of PersonAgents to spawn. Capped at
+            the number of room nodes in the building graph (10 at
+            present). D-025 default 20.
+        seed: RNG seed for the start-position scatter across room nodes.
+        t_end_s: Maximum simulation time (s).
+        dt_s: Outer-loop step (s).
 
     Returns:
-        :class:`ScenarioMetrics` with scenario_id="S1_fixed_sign".
+        :class:`ScenarioMetrics` with ``scenario_id="S1_fixed_sign"``.
+        In M3-mini the three fire-dependent metrics
+        (``danger_zone_exposure_time``, ``casualty_rate``,
+        ``cumulative_FED``) are exactly 0.
 
     Raises:
-        NotImplementedError: Pending the next implementation commit.
+        FileNotFoundError: If ``assets/placeholder_building.urdf`` is
+            missing (run ``python -m src.integration.urdf_builder`` to
+            regenerate it).
+        RuntimeError: If the building graph has no room nodes.
     """
-    raise NotImplementedError(
-        "Week 12 M5: build Scene -> spawn 20 PersonAgent -> FixedSignNetwork "
-        "-> outer loop with FED + status transitions -> aggregate via "
-        "MetricsCollector -> return ScenarioMetrics."
+    if not _PLACEHOLDER_URDF.exists():
+        raise FileNotFoundError(
+            f"placeholder URDF missing: {_PLACEHOLDER_URDF}. "
+            f"Run: python -m src.integration.urdf_builder"
+        )
+
+    cfg = SceneConfig(
+        connection_mode="DIRECT",
+        building_urdf=_PLACEHOLDER_URDF,
+        dt_s=dt_s,
+        draw_origin_axes=False,
     )
+    scene = Scene.create(cfg)
+    try:
+        obstacles = [scene.building_id]
+        risk_map = _zero_risk_map()
+        exits_xyz = _exit_positions()
+        agents = _spawn_agents(scene, n_persons, seed)
+        n_actual = len(agents)
+        provider = FixedSignNetwork(
+            risk_map=risk_map,
+            exit_positions=exits_xyz,
+            danger_threshold=0.5,
+        )
+
+        arrived: Dict[str, float] = {}
+        max_steps = int(math.ceil(t_end_s / dt_s)) + 5
+        for _ in range(max_steps):
+            t_now = float(scene.t)
+            if t_now >= t_end_s:
+                break
+            for agent in agents:
+                if agent.agent_id in arrived:
+                    continue
+                wp = provider.next_waypoint(agent.position, t_now)
+                if wp is None:
+                    continue
+                agent.step_toward(
+                    scene.client,
+                    wp,
+                    dt_s,
+                    obstacle_body_ids=obstacles,
+                )
+                # Arrived if within tolerance of *any* exit (XY only).
+                for ex in exits_xyz:
+                    if (
+                        float(np.linalg.norm(agent.position[:2] - ex[:2]))
+                        <= agent.config.arrival_tolerance_m
+                    ):
+                        arrived[agent.agent_id] = t_now
+                        break
+            scene.step()
+            if len(arrived) == n_actual:
+                break
+
+        # ── Aggregate ─────────────────────────────────────────────
+        success_rate = (len(arrived) / n_actual) if n_actual else 0.0
+        if arrived:
+            mean_evac_time = float(np.mean(list(arrived.values())))
+        else:
+            mean_evac_time = float("nan")
+
+        return ScenarioMetrics(
+            scenario_id="S1_fixed_sign",
+            fire_scenario_id=fire_scenario_id,
+            seed=seed,
+            n_persons=n_actual,
+            evacuation_success_rate=success_rate,
+            mean_evacuation_time_s=mean_evac_time,
+            danger_zone_exposure_time_s=0.0,  # M3-mini: no fire
+            casualty_rate=0.0,                 # M3-mini: no status machine
+            cumulative_fed=0.0,                # M3-mini: no FED accumulator
+        )
+    finally:
+        scene.close()
 
 
+# ─── Self-test ────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    print("s1_fixed_sign.py - skeleton")
-    print("SKIP")
+    import sys
+
+    print("=" * 60)
+    print("s1_fixed_sign.py self-test (M3-mini)")
+    print("=" * 60)
+
+    errors: list[str] = []
+
+    # ── 1. FixedSignNetwork.next_waypoint with empty exits ─────────────
+    print("\n[1] FixedSignNetwork with no exits -> None")
+    empty = FixedSignNetwork(risk_map=_zero_risk_map(), exit_positions=[])
+    wp = empty.next_waypoint(np.array([5.0, 5.0, 1.5]), t=0.0)
+    if wp is not None:
+        errors.append(f"expected None for empty exits, got {wp}")
+    else:
+        print("  PASS")
+
+    # ── 2. FixedSignNetwork picks nearest below-threshold exit ─────────
+    print("\n[2] FixedSignNetwork nearest-exit logic")
+    rm = _zero_risk_map()  # all-safe
+    exits = _exit_positions()
+    print(f"  exits = {[tuple(round(v, 1) for v in e) for e in exits]}")
+    net = FixedSignNetwork(risk_map=rm, exit_positions=exits, danger_threshold=0.5)
+    # Agent at (5, 4): nearest is exit_west (0, 5) dist ~5.1
+    wp_b = net.next_waypoint(np.array([5.0, 4.0, 1.5]), t=0.0)
+    print(f"  query (5, 4)  -> {tuple(round(v, 1) for v in wp_b)}")
+    if abs(wp_b[0] - 0.0) > 1e-6 or abs(wp_b[1] - 5.0) > 1e-6:
+        errors.append(f"expected exit_west (0, 5), got {wp_b}")
+    # Agent at (28, 16): nearest is exit_east (30, 13) dist sqrt(4+9)=3.6
+    wp_e = net.next_waypoint(np.array([28.0, 16.0, 1.5]), t=0.0)
+    print(f"  query (28, 16) -> {tuple(round(v, 1) for v in wp_e)}")
+    if abs(wp_e[0] - 30.0) > 1e-6 or abs(wp_e[1] - 13.0) > 1e-6:
+        errors.append(f"expected exit_east (30, 13), got {wp_e}")
+
+    # ── 3. Full run smoke: 5 agents, 60 s, no fire ─────────────────────
+    print("\n[3] run() smoke: 5 agents, 60 s, no fire")
+    result = run(
+        fire_scenario_id="m3_mini_smoke",
+        fds_dir=Path("data/raw/sim_1500kw_2m2_T05"),  # ignored in M3-mini
+        n_persons=5,
+        seed=0,
+        t_end_s=60.0,
+        dt_s=1.0,
+    )
+    print(f"  {result.summary_line()}")
+    if result.scenario_id != "S1_fixed_sign":
+        errors.append(f"scenario_id wrong: {result.scenario_id}")
+    if result.n_persons != 5:
+        errors.append(f"n_persons {result.n_persons} != 5")
+    if result.danger_zone_exposure_time_s != 0.0:
+        errors.append(f"exposure != 0: {result.danger_zone_exposure_time_s}")
+    if result.casualty_rate != 0.0:
+        errors.append(f"casualty != 0: {result.casualty_rate}")
+    if result.cumulative_fed != 0.0:
+        errors.append(f"fed != 0: {result.cumulative_fed}")
+    # Without a planner some agents get stuck on the interior partition.
+    # Require at least 40 % arrived (≥ 2 of 5).
+    if result.evacuation_success_rate < 0.4:
+        errors.append(
+            f"only {result.evacuation_success_rate*100:.0f}% arrived "
+            f"(expected >= 40%)"
+        )
+    if (
+        not math.isnan(result.mean_evacuation_time_s)
+        and result.mean_evacuation_time_s > 60.0
+    ):
+        errors.append(
+            f"mean evac time {result.mean_evacuation_time_s} exceeds 60 s"
+        )
+    if result.evacuation_success_rate > 0 and math.isnan(
+        result.mean_evacuation_time_s
+    ):
+        errors.append("at least 1 arrived but mean_evac_time is NaN")
+
+    # ── 4. Different seed gives different agent set (likely) ───────────
+    print("\n[4] Different seed produces a result (no crash)")
+    result_b = run(
+        fire_scenario_id="m3_mini_smoke",
+        fds_dir=Path("data/raw/sim_1500kw_2m2_T05"),
+        n_persons=5,
+        seed=7,
+        t_end_s=60.0,
+        dt_s=1.0,
+    )
+    print(f"  seed=7: {result_b.summary_line()}")
+    if result_b.n_persons != 5:
+        errors.append(f"seed=7 n_persons wrong: {result_b.n_persons}")
+
+    # ── 5. CSV-compatibility of the row (round-trip via to_dict) ───────
+    print("\n[5] ScenarioMetrics.to_dict round-trip")
+    d = result.to_dict()
+    if d["scenario_id"] != "S1_fixed_sign":
+        errors.append("to_dict lost scenario_id")
+    print(f"  keys = {sorted(d)}")
+
+    # ── Verdict ────────────────────────────────────────────────────
+    if errors:
+        print("\nFAIL")
+        for e in errors:
+            print(f"  - {e}")
+        sys.exit(1)
+    print("\nPASS: s1_fixed_sign M3-mini validated")
