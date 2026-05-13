@@ -174,13 +174,31 @@ PI loss components (curriculum learning, weight ramp):
 - Train MSE: 0.0187 → **0.0067** (수렴)
 - Full-input ConvLSTM (0.001) 대비 6.7× — sparse 정보 손실 반영
 
-### 6.2 OOD 평가 결과 (13 시나리오)
+### 6.2 OOD 평가 결과 (13 시나리오) — 두 가지 inference 방식
+
+#### (a) Without re-sparsify chaining (default, conservative bias 발생)
 
 | 메트릭 | Mean | 비교 |
 |---|---|---|
 | **IoU @ +60s** | **0.182** | L4d ConvLSTM geodesic (0.212) 보다 낮음 |
 | **FNR @ +60s** | **0.0%** ★ | 모든 시나리오 0% (conservative bias) |
 | RMSE step 6 | 0.708 | 높음 (over-prediction) |
+
+#### (b) **With re-sparsify chaining ★** — autoregress distribution shift 해결
+
+| 메트릭 | Mean | vs (a) |
+|---|---|---|
+| **IoU @ +60s** | **0.581** | **+0.40 (3.2× 향상)** |
+| FNR @ +60s | 23.0% | +23%p (정상화) |
+| **RMSE step 6** | **0.120** | -0.59 |
+
+→ **Tier 2 sparse 의 새 best** (이전 FNO no-PI 0.43 능가). 단 여전히 H5 (0.70) 미달.
+
+**왜 차이가 큰가** — Autoregress distribution shift:
+- 학습: sparse input → dense target
+- Inference (a): 자기 dense output 을 다시 입력 → 학습 분포 외 → drift 누적 → over-saturation
+- Inference (b): 매 step 마다 sensor 외 cell 의 T/V/CO 를 0 으로 강제 → 학습 분포 유지
+- → (b) 가 자연스러운 deployment 와도 일치 (매 10s 마다 sensor update)
 
 **시나리오별** (`figures/current/07_sparse_retrain_v3/per_scenario.png`):
 - Best: 1500kw_2m2_T05 (0.38), 1000kw_2m2_T05 (0.35)

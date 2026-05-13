@@ -27,7 +27,8 @@
 | **L4d (16)** | Sparse + geodesic IDW (16 sens) | BFS geodesic + IDW | ConvLSTM | 0.41 |
 | **L4d (39)** | Sparse + geodesic IDW (39 sens) | BFS geodesic + IDW | ConvLSTM | 0.21 |
 | **L4d (39)** | Sparse + geodesic IDW (39 sens) | BFS geodesic + IDW | **FNO no-PI** | **0.43** |
-| **L4e** ✅ | **Sparse retrain ConvLSTM (39 sensor, 50-ep)** | 모델 재학습 | Sparse ConvLSTM | **0.182** (FNR 0% ★ conservative bias) |
+| L4e (no re-sparsify) | Sparse retrain ConvLSTM, naïve chaining | 모델 재학습 | Sparse ConvLSTM | 0.182 (FNR 0% conservative bias) |
+| **L4e ★ (re-sparsify)** | **Sparse retrain + autoregress re-sparsify (Tier 2 new best)** | 매 step sensor 외 0 강제 | Sparse ConvLSTM | **0.581** (FNR 23%) |
 | **L4f** ★ | **Tier 1 GNN binary (39 nodes)** | D-023 trigger | **SimpleFireGNN** | **0.90** ★★ |
 
 ---

@@ -69,8 +69,9 @@ def autoregress_sparse_input(model, initial_sparse_input, sparse_ind,
             t_next = t0_seconds + (step + 1) * DT_SLCF
             state = np.zeros_like(state)
             state[:3] = y_pred
-            # Re-sparsify (sensor 외 cell 의 T/V/CO 를 0 으로) — 옵션
-            # 단 학습 시 dense target 으로 학습됐으니 그대로 chaining 도 가능
+            # Re-sparsify — training 분포와 일치 (autoregress drift 방지)
+            for c in range(3):
+                state[c][not_sensor] = 0.0
             state[3] = mask_ch
             state[4] = np.full_like(mask_ch, t_next / T_END_SECONDS)
     return preds

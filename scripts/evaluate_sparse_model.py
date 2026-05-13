@@ -125,7 +125,8 @@ def build_sparse_input(slices: Dict[str, np.ndarray],
 
 def eval_scenario(scen_dir: Path, sparse_model: torch.nn.Module,
                    mask: np.ndarray, sparse_ind: np.ndarray,
-                   t0_seconds: float, device: torch.device) -> Dict[str, Any]:
+                   t0_seconds: float, device: torch.device,
+                   resparsify: bool = False) -> Dict[str, Any]:
     name = scen_dir.name
     m = SCEN_RE.match(name)
     meta = {"name": name, "loc": m.group("loc"),
@@ -145,6 +146,7 @@ def eval_scenario(scen_dir: Path, sparse_model: torch.nn.Module,
     # Autoregress 60s
     preds_norm = autoregress_sparse(
         sparse_model, inp[t0_idx], sparse_ind, t0_seconds, device,
+        resparsify=resparsify,
     )
     times_arr = np.array([t0_seconds + (s + 1) * DT_SLCF for s in range(LOOKAHEAD_STEPS)])
     preds_danger = prediction_to_danger(preds_norm, times_arr)
@@ -229,6 +231,9 @@ def main() -> int:
                         default=Path("docs/sparse_retrain_evaluation.md"))
     parser.add_argument("--t0", type=float, default=120.0)
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--resparsify", action="store_true",
+                        help="Re-sparsify model output at each autoregress step "
+                             "(forces sensor-only T/V/CO between chains)")
     args = parser.parse_args()
 
     args.out_figures.mkdir(parents=True, exist_ok=True)
@@ -246,7 +251,8 @@ def main() -> int:
     results = []
     for scen in scens:
         try:
-            r = eval_scenario(scen, sparse_model, mask, sparse_ind, args.t0, device)
+            r = eval_scenario(scen, sparse_model, mask, sparse_ind, args.t0, device,
+                                resparsify=args.resparsify)
             results.append(r)
         except Exception as e:
             print(f"[skip] {scen.name}: {e}")

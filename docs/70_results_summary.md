@@ -30,7 +30,8 @@
 | L4 sparse + geodesic IDW (39) | ConvLSTM | 0.21 | 25% | 0.44 | ❌ | ❌ |
 | L4 sparse + geodesic IDW | **FNO no-PI** | **0.43** | 33% | 0.24 | ❌ | ❌ |
 | L4 sparse + geodesic IDW | FNO PI | 0.32 | 30% | 0.33 | ❌ | ❌ |
-| **L4e Sparse-retrain ConvLSTM (50-ep)** | Sparse ConvLSTM | **0.182** | **0.0%** ★ | 0.71 | ❌ | ✅ FNR |
+| L4e Sparse-retrain ConvLSTM (no re-sparsify) | Sparse ConvLSTM | 0.182 | 0.0% (conservative) | 0.71 | ❌ | ✅ |
+| **L4e Sparse-retrain + re-sparsify ★** | **Sparse ConvLSTM** | **0.581** | 23.0% | 0.12 | ❌ | ❌ |
 | **L4f Tier 1 GNN binary** | **SimpleFireGNN** | **0.904** ★ | **4.6%** | — | **✅** | **✅** |
 
 ---
