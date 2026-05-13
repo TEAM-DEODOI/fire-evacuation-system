@@ -57,11 +57,27 @@ LOOKAHEAD_STEPS = 6
 
 
 # ─── Sensor positions ──────────────────────────────────────────────────────
-def load_sensor_positions(building_yaml: Path) -> List[Tuple[float, float]]:
-    with building_yaml.open(encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-    return [(n["pos"][0], n["pos"][1])
-            for n in cfg["nodes"] if n.get("has_detector")]
+def load_sensor_positions(
+    building_yaml: Path, source: str = "d024",
+) -> List[Tuple[float, float]]:
+    """Load sensor (x, y) positions.
+
+    Args:
+        building_yaml: Path to ``configs/building.yaml`` (used only when
+            ``source="building_yaml"``).
+        source: ``"d024"`` (27 detectors from D-024) or ``"building_yaml"``
+            (legacy 16 detectors with ``has_detector=True``).
+    """
+    if source == "d024":
+        from src.tier1.detector_positions import ALL_DETECTORS
+        return [(d.position[0], d.position[1]) for d in ALL_DETECTORS]
+    elif source == "building_yaml":
+        with building_yaml.open(encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        return [(n["pos"][0], n["pos"][1])
+                for n in cfg["nodes"] if n.get("has_detector")]
+    else:
+        raise ValueError(f"unknown source: {source!r}")
 
 
 def world_to_xy_idx(xy: Tuple[float, float]) -> Tuple[int, int]:
@@ -366,8 +382,9 @@ def plot_comparison(results: List[Dict[str, Any]], models: List[str],
     axes[1].set_ylabel("Risk-map RMSE at t₀+60s")
     axes[1].set_title("RMSE comparison")
     axes[1].legend(); axes[1].grid(alpha=0.3, axis="y")
-    fig.suptitle("Track 1A.5 — Mask-aware geodesic interpolation\n"
-                 "16 sensors, t₀ = 120s, 13 OOD scenarios",
+    n_sensors_text = "n sensors"
+    fig.suptitle(f"Track 1A.5 — Mask-aware geodesic interpolation\n"
+                 f"t₀ = 120s, 13 OOD scenarios",
                  fontsize=12)
     fig.tight_layout(rect=[0, 0, 1, 0.93])
     fig.savefig(out_path, dpi=110, bbox_inches="tight")
@@ -521,6 +538,10 @@ def main() -> int:
                         default=Path("docs/sparse_sensing_geodesic_evaluation.md"))
     parser.add_argument("--t0", type=float, default=120.0)
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--sensor-source", type=str, default="d024",
+                        choices=["d024", "building_yaml"],
+                        help="d024: 27 detectors from D-024 (default); "
+                             "building_yaml: legacy 16 detectors")
     args = parser.parse_args()
 
     args.out_figures.mkdir(parents=True, exist_ok=True)
@@ -534,8 +555,8 @@ def main() -> int:
         "FNO PI":    load_model(Path("checkpoints/fno_pi/best.pt"), device, "fno"),
     }
     mask = load_mask(args.dataset)
-    sensors = load_sensor_positions(args.building)
-    print(f"[setup] {len(sensors)} sensors")
+    sensors = load_sensor_positions(args.building, source=args.sensor_source)
+    print(f"[setup] {len(sensors)} sensors (source={args.sensor_source})")
 
     # Precompute geodesic distances (한 번만 — building 이 동일하므로 모든 시나리오 공유)
     _, _, z_c = cell_centres()
