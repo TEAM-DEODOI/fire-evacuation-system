@@ -14,6 +14,7 @@
 | **`04_tier1_gnn/`** | **Tier 1 GNN 결과 (paper headline)** | **`headline.png`**, `aggregate_iou.png`, `sim_*_t12.png` (13개) |
 | `05_future_prediction/` | 60s autoregress (L2 ideal) | `sim_*_grid_t0_*.png` (cold-start vs mid-fire) |
 | `06_detector_triggered/` | L3 detector-triggered eval | `iou_per_scenario.png`, `trigger_time_distribution.png` |
+| `07_sparse_retrain_v3/` | L4e Sparse-retrain ConvLSTM | `full_stack_comparison.png`, `per_scenario.png` |
 
 ---
 

@@ -142,15 +142,24 @@ python experiments/exp_path_001.py \
 
 ---
 
-## 3. ★★ Sparse-input ConvLSTM 결과 (사용자 진행 중)
+## 3. ✅ Sparse-input ConvLSTM 결과 — 완료 (2026-05-13)
 
-사용자가 VS Code 에서 `scripts/train_sparse_conv_lstm.py` 학습 진행 중.
+학습 완료: `checkpoints/conv_lstm_sparse_v3/best.pt` (50 epoch, 1.4 MB).
 
-완료 시:
-1. `checkpoints/conv_lstm_sparse_v3/best.pt` 도착 확인
-2. 평가: `python scripts/evaluate_sparse_model.py --ckpt checkpoints/conv_lstm_sparse_v3/best.pt`
-3. L4e 결과를 `docs/70_results_summary.md` 의 layer 표에 추가
-4. `figures/current/03_sparse_interpolation/full_stack_comparison.png` (또는 별도 figure) 갱신
+**핵심 결과**:
+- Mean IoU @ +60s: **0.182** (H5 미달)
+- Mean FNR: **0.0%** (conservative bias — 모든 곳 위험 예측)
+- Mean RMSE step 6: 0.708
+
+**해석**: Sparse 정보 (1.6% nonzero) 만으로 학습한 결과, ConvLSTM 이 over-prediction 으로 수렴. 정확한 영역 식별 (IoU) 은 못 하지만 위험 영역 놓치지 않음 (FNR 0%). Safety-critical regime 에서 *valuable conservative bias*.
+
+산출물:
+- `figures/current/07_sparse_retrain_v3/full_stack_comparison.png` (Layer L2-L4 비교)
+- `figures/current/07_sparse_retrain_v3/per_scenario.png`
+- `results/exp_sparse_retrain_v3/comparison.csv`
+- `docs/archive/auto_reports/sparse_retrain_v3_evaluation.md`
+
+→ **Tier 1 GNN (IoU 0.90) 이 deployment 선택지로 확정**. L4e 의 IoU 낮지만 conservative bias 는 paper 의 *limitation + safety discussion* 으로 활용.
 
 ---
 
@@ -319,7 +328,7 @@ def query_ensemble(xyz, t, w_tier1=0.5, w_tier2=0.5):
 - [x] Evaluation Layer L1-L4 framework
 - [x] Paper Figure 1-6 (headline)
 - [x] Documentation 정리 (이 파일들)
-- [ ] **Sparse-input ConvLSTM full training** (사용자 진행 중)
+- [x] **Sparse-input ConvLSTM full training** ✅ (IoU 0.182, FNR 0% conservative bias)
 - [ ] **Tier1RiskMap + path planning + EXP-PATH-001** ← 가장 중요
 - [ ] **PyBullet Week 12 통합** (외주)
 - [ ] Paper draft

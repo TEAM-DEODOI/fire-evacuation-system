@@ -157,21 +157,68 @@ PI loss components (curriculum learning, weight ramp):
 
 ---
 
-## 6. Sparse-input Retrain — Track 1B (사용자 학습 진행)
+## 6. Sparse-input Retrain — L4e (Track 1B) ✅ 완료
 
 **아이디어**: 모델 architecture 그대로, **input format 만 sparse 로 학습**.
 
 **구현**: `scripts/train_sparse_conv_lstm.py`
 - `SparseFireDataset`: dataset.h5 의 input 을 sparse 로 즉시 변환 (in-memory)
-- 모델 (ConvLSTM) in_channels=5 그대로
+- 모델 (ConvLSTM) in_channels=5 그대로 (349K params)
 - T/V/CO 채널을 39 sensor cell 만 nonzero
 - Target 은 full dense → 모델이 sparse → dense 직접 학습
 
-**Smoke test (5 epoch warm-start, 16 sensor 버전)**:
-- Test IoU step 6: 0.20 (boilerplate 검증)
+### 6.1 학습 결과 (39 sensor v3.3)
 
-**Full 학습 (39 sensor 버전, 사용자 진행 중)**:
-- 결과 도착 시 `70_results_summary.md` 갱신
+**체크포인트**: `checkpoints/conv_lstm_sparse_v3/best.pt`
+- 50 epoch 학습, batch_size=4, warm-start from `conv_lstm/best.pt`
+- Train MSE: 0.0187 → **0.0067** (수렴)
+- Full-input ConvLSTM (0.001) 대비 6.7× — sparse 정보 손실 반영
+
+### 6.2 OOD 평가 결과 (13 시나리오)
+
+| 메트릭 | Mean | 비교 |
+|---|---|---|
+| **IoU @ +60s** | **0.182** | L4d ConvLSTM geodesic (0.212) 보다 낮음 |
+| **FNR @ +60s** | **0.0%** ★ | 모든 시나리오 0% (conservative bias) |
+| RMSE step 6 | 0.708 | 높음 (over-prediction) |
+
+**시나리오별** (`figures/current/07_sparse_retrain_v3/per_scenario.png`):
+- Best: 1500kw_2m2_T05 (0.38), 1000kw_2m2_T05 (0.35)
+- Worst: 500kw_1m2_T01 (0.05), 500kw_1m2_T03 (0.06)
+- **13/13 H5 미달** (IoU 0.05-0.38 모두 < 0.70)
+
+### 6.3 핵심 발견 — Conservative Bias
+
+**FNR 0%** = 위험 영역을 한 번도 놓치지 않음.
+**IoU 0.18** = 동시에 false positive 가 매우 많음 (over-prediction).
+
+→ 모델이 sparse signal 만으로 "어디가 위험한지" 정확히 가리지 못하고
+**모든 fluid cell 을 위험 (≥0.5) 으로 예측**.
+
+**원인 분석**:
+1. Sparse input 의 데이터 효율: 14,400 cell 중 234 만 nonzero (**1.6%**)
+2. ConvLSTM 의 local 3D conv 가 sparse input 에 둔감 (dense 가정 architecture)
+3. Training 시 dense target — sparse input 으로 정확히 매핑 어려움
+4. **Safety-critical 측면에서는 valuable**: "위험 놓치지 않음" 보장.
+   단 path planning 의 cost function 으로는 부적합 (모든 edge 가 위험으로 가중).
+
+### 6.4 vs 보간 + 기존 학습 (L4d)
+
+| 평가 | IoU | FNR | RMSE |
+|---|---|---|---|
+| L4d Sparse + Geodesic + **기존** ConvLSTM | 0.212 | 25% | 0.443 |
+| L4e Sparse-retrain ConvLSTM (재학습) | 0.182 | **0.0%** | 0.708 |
+| L4d Sparse + Geodesic + FNO no-PI (best Tier 2) | **0.431** | 33% | 0.243 |
+
+→ **재학습이 IoU 측면에서는 손해**. FNO no-PI + geodesic 이 Tier 2 best.
+→ **재학습의 가치는 FNR 0% (over-cautious bias)** — paper limitation 으로 명시.
+
+### 6.5 결론
+
+Sparse-input retrain 자체는 H5 (IoU ≥ 0.70) 달성 못 함. 단:
+- **Conservative output 의 한 사례** — safety-critical regime 에서 valuable
+- Sparse signal 의 fundamental information bottleneck 확인
+- **Tier 1 GNN (IoU 0.90) 이 여전히 best deployment 선택지**
 
 ---
 

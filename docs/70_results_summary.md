@@ -30,6 +30,7 @@
 | L4 sparse + geodesic IDW (39) | ConvLSTM | 0.21 | 25% | 0.44 | ❌ | ❌ |
 | L4 sparse + geodesic IDW | **FNO no-PI** | **0.43** | 33% | 0.24 | ❌ | ❌ |
 | L4 sparse + geodesic IDW | FNO PI | 0.32 | 30% | 0.33 | ❌ | ❌ |
+| **L4e Sparse-retrain ConvLSTM (50-ep)** | Sparse ConvLSTM | **0.182** | **0.0%** ★ | 0.71 | ❌ | ✅ FNR |
 | **L4f Tier 1 GNN binary** | **SimpleFireGNN** | **0.904** ★ | **4.6%** | — | **✅** | **✅** |
 
 ---
@@ -99,6 +100,39 @@
 | 평균 (13개) | **0.431** | **33%** |
 
 → **모두 H5 미달**.
+
+---
+
+## 5b. Sparse-retrain ConvLSTM (L4e) — 추가 발견
+
+50-epoch warm-started, 39-sensor sparse input:
+
+| 시나리오 | IoU step 6 | 비고 |
+|---|---|---|
+| 1500kw_2m2_T05 | 0.38 | best |
+| 1000kw_2m2_T05 | 0.35 | |
+| 1000kw_2m2_T01 | 0.24 | |
+| 1500kw_1m2_T02 | 0.24 | |
+| 500kw_2m2_T05 | 0.24 | |
+| 500kw_2m2_T02 | 0.19 | |
+| 1500kw_1m2_T03 | 0.18 | |
+| 1000kw_1m2_T01 | 0.13 | |
+| 1000kw_1m2_T03 | 0.13 | |
+| 500kw_1m2_T04 | 0.09 | |
+| 500kw_1m2_T02 | 0.08 | |
+| 500kw_1m2_T03 | 0.06 | |
+| 500kw_1m2_T01 | 0.05 | worst |
+| **Mean** | **0.182** | All FNR 0% (conservative bias) |
+
+**핵심 발견**:
+- IoU 측면: 모든 시나리오 H5 (0.70) 미달
+- FNR 측면: **모든 시나리오 0%** — 위험 영역 한 번도 놓치지 않음
+- 즉 모델이 over-prediction (대부분 fluid cell → 위험)
+- Safety-critical 측면에서는 *valuable conservative*, path planning cost 로는 부적합
+
+**Tier 1 GNN (IoU 0.90, FNR 5%) 이 deployment 선택지로 우위 확정.**
+
+상세: [`40_tier2_models_continuous.md`](40_tier2_models_continuous.md) §6.
 
 ---
 
