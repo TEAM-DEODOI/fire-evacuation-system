@@ -37,10 +37,11 @@ from src.shared.coordinates import cell_centres
 from src.tier1.detector_positions import ALL_DETECTORS
 from src.tier1.tier1_dataset import Tier1FireDataset
 from src.tier1.tier1_gnn import SimpleFireGNN, build_knn_adjacency
-from evaluate_t_locations import load_mask
+from evaluate_t_locations import load_mask, load_model
 from evaluate_sparse_fno import (
     load_sparse_fno, build_sparse_6ch_input, autoregress_sparse_fno,
 )
+from evaluate_sparse_model import build_sparse_input, autoregress_sparse
 from train_sparse_conv_lstm import load_sensor_indices, make_sparse_indicator
 
 SCEN_RE = re.compile(r"^sim_(?P<hrr>\d+)kw_(?P<area>\d+)m2_(?P<loc>T\d{2})$")
@@ -123,16 +124,17 @@ def tier1_forward(
     return y_pred.T   # (T_out, N)
 
 
-# ─── Tier 2 FNO forward ───────────────────────────────────────────────────
+# ─── Tier 2 forward (FNO or ConvLSTM) ─────────────────────────────────────
 def tier2_forward(
     scen_dir: Path,
-    fno_model,
+    tier2_model,
     mask: np.ndarray,
     sparse_ind: np.ndarray,
     t0_seconds: float,
     device: torch.device,
+    arch: str = "fno",         # "fno" (6-ch) or "conv_lstm" (5-ch)
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Tier 2 sparse FNO forward → (T_out, X, Y, Z) cell danger + truth window."""
+    """Tier 2 sparse model forward → (T_out, X, Y, Z) cell danger + truth window."""
     slices = extract_slices(scen_dir)
     truth_danger = compute_total_danger(
         slices["temperature"], slices["visibility"], slices["co"],
@@ -140,11 +142,21 @@ def tier2_forward(
     t0_idx = int(t0_seconds // DT_SLCF)
     truth_window = truth_danger[t0_idx + 1 : t0_idx + 1 + LOOKAHEAD_STEPS]
 
-    inp_6ch = build_sparse_6ch_input(slices, mask, sparse_ind)
-    preds_norm = autoregress_sparse_fno(
-        fno_model, inp_6ch[t0_idx], sparse_ind, t0_seconds, device,
-        resparsify=True,
-    )
+    if arch == "fno":
+        inp = build_sparse_6ch_input(slices, mask, sparse_ind)
+        preds_norm = autoregress_sparse_fno(
+            tier2_model, inp[t0_idx], sparse_ind, t0_seconds, device,
+            resparsify=True,
+        )
+    elif arch == "conv_lstm":
+        inp = build_sparse_input(slices, mask, sparse_ind)   # (31, 5, ...)
+        preds_norm = autoregress_sparse(
+            tier2_model, inp[t0_idx], sparse_ind, t0_seconds, device,
+            resparsify=True,
+        )
+    else:
+        raise ValueError(f"Unknown arch: {arch}")
+
     times_arr = np.array([t0_seconds + (s + 1) * DT_SLCF
                            for s in range(LOOKAHEAD_STEPS)])
     pred_danger = prediction_to_danger(preds_norm, times_arr)
@@ -171,11 +183,12 @@ def iou_rmse_fnr(pred, truth, mask, threshold=0.5):
 
 def eval_scenario_all_weights(
     scen_dir: Path,
-    gnn_model, fno_model,
+    gnn_model, tier2_model,
     adj, mask, sparse_ind, knn_idx, knn_w,
     t_start: int, t0_seconds: float,
     weights_list: List[float],
     seq_dir: Path, device: torch.device,
+    tier2_arch: str = "fno",
 ) -> List[Dict[str, Any]]:
     """모든 가중치에 대해 평가."""
     name = scen_dir.name
@@ -185,8 +198,8 @@ def eval_scenario_all_weights(
     t1_cell = gnn_node_pred_to_cell_danger(t1_node, knn_idx, knn_w)           # (T_out, X, Y, Z)
 
     # Tier 2 forward (한 번만)
-    t2_cell, truth = tier2_forward(scen_dir, fno_model, mask, sparse_ind,
-                                    t0_seconds, device)
+    t2_cell, truth = tier2_forward(scen_dir, tier2_model, mask, sparse_ind,
+                                    t0_seconds, device, arch=tier2_arch)
 
     results = []
     for w_t1 in weights_list:
@@ -208,6 +221,9 @@ def main() -> int:
                         default=Path("checkpoints/tier1_gnn_v3/best.pt"))
     parser.add_argument("--tier2-ckpt", type=Path,
                         default=Path("checkpoints/fno_sparse_v3/best.pt"))
+    parser.add_argument("--tier2-arch", type=str, default="fno",
+                        choices=["fno", "conv_lstm"],
+                        help="Tier 2 architecture (default fno = 6-ch sparse FNO)")
     parser.add_argument("--raw-root", type=Path, default=Path("data/raw"))
     parser.add_argument("--seq-dir", type=Path,
                         default=Path("results/detector_sequences"))
@@ -241,8 +257,12 @@ def main() -> int:
     gnn_model.to(device).eval()
     adj = build_knn_adjacency(k=cfg.get("knn_k", 4))
 
-    # Tier 2 FNO
-    fno_model = load_sparse_fno(args.tier2_ckpt, device)
+    # Tier 2 model (FNO or ConvLSTM)
+    if args.tier2_arch == "fno":
+        tier2_model = load_sparse_fno(args.tier2_ckpt, device)
+    else:
+        tier2_model = load_model(args.tier2_ckpt, device, "conv_lstm")
+    print(f"        tier2 arch: {args.tier2_arch}, ckpt: {args.tier2_ckpt}")
 
     mask = load_mask(args.dataset)
     sensor_idxs = load_sensor_indices(args.building)
@@ -264,9 +284,9 @@ def main() -> int:
     for scen in scens:
         try:
             rs = eval_scenario_all_weights(
-                scen, gnn_model, fno_model, adj, mask, sparse_ind,
+                scen, gnn_model, tier2_model, adj, mask, sparse_ind,
                 knn_idx, knn_w, t_start, args.t0, weights_list,
-                args.seq_dir, device,
+                args.seq_dir, device, tier2_arch=args.tier2_arch,
             )
             all_results.extend(rs)
         except Exception as e:

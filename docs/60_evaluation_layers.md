@@ -30,7 +30,11 @@
 | L4e (no re-sparsify) | Sparse retrain ConvLSTM, naïve chaining | 모델 재학습 | Sparse ConvLSTM | 0.182 (FNR 0% conservative bias) |
 | **L4e ★ (re-sparsify)** | **Sparse retrain + autoregress re-sparsify** | 매 step sensor 외 0 강제 | Sparse ConvLSTM | **0.581** (FNR 23%, 0/13 H5) |
 | **L4e' ★ (FNO 6-ch)** | **Sparse FNO + sensor indicator channel + re-sparsify** | 6-channel + Fourier basis | Sparse FNO | **0.525** (FNR **10.4%**, **4/13 H5 통과**) |
-| **L4g ★★ (Ensemble)** | **Tier 1 + Tier 2 weighted ensemble (w_t1=0.6)** | k-NN cell projection + 가중평균 | GNN + Sparse FNO | **0.576** (FNR **4.8%** ✅ H4) |
+| L4g (2-way Ensemble GNN+FNO) | w_t1=0.6 best | GNN + Sparse FNO | **0.576** (FNR **4.8%** ✅ H4) |
+| L4g (2-way Ensemble GNN+ConvLSTM) | w_t1=0.4 best IoU | GNN + Sparse ConvLSTM | **0.619** (FNR 15.0%) |
+| **L4g ★★★ (3-way Ensemble — best balanced)** | **w=(0.5, 0.25, 0.25)** | GNN + Sparse ConvLSTM + Sparse FNO | **0.621** (FNR **6.4%** ✅ H4, **5/13 H5**) |
+| L4g (3-way max IoU) | w=(0.4, 0.45, 0.15) | GNN + ConvLSTM + FNO | **0.625** (FNR 10.8%, 4/13) |
+| L4g (3-way min FNR) | w=(0.6, 0.10, 0.30) | GNN + ConvLSTM + FNO | 0.597 (FNR **4.7%** ✅ H4) |
 | **L4f** ★ | **Tier 1 GNN binary (39 nodes)** | D-023 trigger | **SimpleFireGNN** | **0.90** ★★ |
 
 ---
