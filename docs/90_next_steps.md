@@ -19,9 +19,23 @@
 
 ## 2. ★★★ H6 검증 작업 세부 (가장 critical)
 
-### 2.1 모듈 작성
+> **D-025 (2026-05-14) 적용**: H6 = "드론 swarm 안내 vs 고정 표지판 baseline",
+> EXP-PATH-001 = 3 PyBullet 시나리오 비교. 구버전 §2 (3-planner 알고리즘
+> 비교, 72 trial) 는 `docs/decisions.md::D-025` 의 사유로 폐기됨.
 
-#### Step 1: `src/tier1/tier1_risk_map.py` (Tier1RiskMap 클래스)
+### 2.1 현재 상태 (2026-05-14)
+
+| 모듈 | 상태 |
+|---|---|
+| `src/path_planning/building_graph.py` | ✅ 완료 — `shared/building.py` 19-node L-shape adapter |
+| `src/path_planning/edge_weights.py` | ✅ 완료 — `EdgeWeightConfig` + N-sample integrated risk + `weight = base_cost·length + risk_scale·risk` + impassable filter |
+| `src/path_planning/planners.py` | ✅ 완료 — **단일** `EvacuationPlanner` (weighted A* + replan, 3-class ABC 폐기 per D-025) |
+| `src/path_planning/evacuation_sim.py` | ✅ 완료 — logical NumPy-only single-occupant sim (multi-agent PyBullet 시뮬은 `src/integration/`) |
+| 자체 self-test 4/4 | ✅ PASS (`python -m src.path_planning.<module>`) |
+
+### 2.2 다음 작성 모듈
+
+#### Step A: `src/tier1/tier1_risk_map.py` (Tier1RiskMap 클래스)
 
 ```python
 from src.risk_map.risk_map_class import RiskMap
@@ -30,13 +44,13 @@ from src.tier1.detector_positions import ALL_DETECTORS
 
 class Tier1RiskMap(RiskMap):
     """GNN forward 결과 → RiskMap interface 어댑터.
-    
-    use case:
-        sim 시 매 30초마다 binary_sequence history 가 업데이트되면
-        그걸로 forward 한 결과를 캐싱.
-        query(xyz, t) 호출 시 가장 가까운 node 의 danger 반환.
+
+    PyBullet 시나리오 S2/S3 모두에서 drone swarm 의 위험도 질의에 사용.
+    매 30초마다 binary_sequence history 가 업데이트되면 GNN forward
+    결과를 캐싱하고, query(xyz, t) 호출 시 가장 가까운 sensor node 의
+    예측 danger 를 반환.
     """
-    
+
     def __init__(
         self,
         gnn_model: SimpleFireGNN,
@@ -44,101 +58,60 @@ class Tier1RiskMap(RiskMap):
         adj: torch.Tensor,
         t0_seconds: float,                # binary history 끝 시각
     ):
-        # 1) GNN forward → (39, T_out=6) pred danger
-        # 2) sensor positions 캐시
-        # 3) time mapping: t_query → step index in pred
-    
-    def query(self, xyz: np.ndarray, t: float | None = None) -> float | np.ndarray:
-        # 1) 가장 가까운 sensor node 찾기 (KD-tree 또는 brute force)
-        # 2) (t - self.t0_seconds) / 10 → step index
-        # 3) clamp + return pred[node_idx, step_idx]
+        ...
+
+    def query(self, xyz, t=None):
+        ...
 ```
 
 **Test**: `__main__` self-test — synthetic 입력으로 query 동작 검증.
 
-#### Step 2: `src/path_planning/edge_weights.py`
+#### Step B: `src/integration/` 신규 모듈 (Week 12)
 
-```python
-def compute_edge_weight(
-    graph: nx.Graph,
-    edge: tuple,            # (u, v)
-    risk_map: RiskMap,
-    t: float = 0.0,
-    alpha: float = 1.0,
-    beta: float = 50.0,
-    n_samples: int = 5,
-) -> float:
-    """Edge weight = α · base_time + β · integrated_risk.
-    
-    Integrated risk: sample n_samples points along edge, query risk_map,
-    take mean (or max for dynamic planner with lookahead).
-    """
-```
+| 파일 | 책임 |
+|---|---|
+| `urdf_builder.py` | STL → URDF 변환 + PyBullet 로딩 |
+| `person_agent.py` | 단순화된 PersonAgent (1.2 m/s 등속, alive→evacuated/dead 3-state, 벽 충돌 회피) |
+| `drone_swarm.py` | gym-pybullet-drones 다중 에이전트, Boids/APF 행동, 고립 PersonAgent 감지 → planner.plan 호출로 waypoint 제공 |
+| `scene.py` | PyBullet 월드 셋업, 카메라, fire 시각화 |
+| `scenarios/s1_fixed_sign.py` | 고정 표지판 baseline (각 출구 방향 화살표 사전 배치, person 이 RiskMap query 로 위험 회피하며 가장 가까운 미위험 표지로 이동) |
+| `scenarios/s2_fds_swarm.py` | drone swarm + `StaticRiskMap.from_fds_dir(...)` |
+| `scenarios/s3_fno_swarm.py` | drone swarm + `FNORiskMap` (또는 `Tier1RiskMap` 변형) |
+| `metrics.py` | 5-metric 계산기: success_rate / mean_evac_time / danger_zone_exposure / casualty_rate / cumulative_FED |
+| `run_exp_path_001.py` | 통합 entry — 3 시나리오 × N 시드 × 20 person 시뮬레이션 |
 
-**Test**: 평면도 위 임의 edge 의 weight 계산 PASS.
-
-#### Step 3: `src/path_planning/planners.py`
-
-```python
-class EvacuationPlanner(ABC):
-    @abstractmethod
-    def plan(self, start_xyz, risk_map, graph, t=0.0) -> list[np.ndarray]:
-        """waypoint list from start to nearest exit. [] if no path."""
-
-class DijkstraPlanner(EvacuationPlanner):
-    """위험 무시, 최단 경로."""
-
-class StaticAvoidancePlanner(EvacuationPlanner):
-    """t=0 의 risk snapshot 으로 A*."""
-
-class DynamicPredictivePlanner(EvacuationPlanner):
-    """60s lookahead, 30s 마다 replan."""
-```
-
-#### Step 4: `src/path_planning/evacuation_sim.py`
-
-```python
-class EvacuationSimulator:
-    def __init__(self, walking_speed_mps=1.5, dt=1.0):
-        ...
-    
-    def simulate(
-        self,
-        planner: EvacuationPlanner,
-        risk_map_truth: RiskMap,    # 항상 FDS-truth (fairness)
-        start_xyz: np.ndarray,
-        graph: nx.Graph,
-    ) -> dict:
-        # path: (N, 3) trajectory
-        # cumulative_fed: (N,)
-        # reach_time, frac_in_danger, final_fed, reached_exit
-```
-
-### 2.2 EXP-PATH-001 실행
+### 2.3 EXP-PATH-001 실행 (D-025 신버전)
 
 ```bash
-python experiments/exp_path_001.py \
-    --scenarios sim_1500kw_2m2_T05 sim_500kw_1m2_T01 sim_1000kw_1m2_T03 \
-    --planners dijkstra static dynamic \
-    --start-positions 8 \
+python -m src.integration.run_exp_path_001 \
+    --scenarios s1_fixed_sign s2_fds_swarm s3_fno_swarm \
+    --fire-scenarios sim_1500kw_2m2_T05 sim_500kw_1m2_T01 sim_1000kw_1m2_T03 \
+    --n-persons 20 \
+    --n-seeds 5 \
     --output results/exp_path_001/
 ```
 
-**총 trial**: 3 scenarios × 3 planners × 8 starts = **72 trials**.
+**총 trial**: 3 시나리오 × 3 화재 × 5 시드 = **45 PyBullet runs** (각 run 안에 20 person).
 
-**측정**:
-- Mean cumulative FED per planner
-- % failed evacuations (FED > 0.3)
-- Mean reach time
+**측정** (per scenario × fire × seed):
+- evacuation_success_rate ∈ [0, 1]
+- mean_evacuation_time (s) — 도달한 person 한정 평균
+- danger_zone_exposure_time (s) — risk ≥ 0.5 체류 시간 평균
+- casualty_rate ∈ [0, 1] — dead status 비율
+- cumulative_FED — person 별 누적 FED 평균 (H6 primary metric)
 
-**가설 H6**: Dynamic FED < Static FED < Dijkstra FED, **Dynamic FED ≤ 0.7 × Dijkstra FED**.
+**가설 H6**: S2_FED ≤ 0.7 × S1_FED (drone swarm 이 baseline 대비 ≥30% FED 감소).
+**가설 H5 보조 확인**: S2 vs S3 결과 차이 → risk map fidelity 가 path quality 로
+transitive 하게 전달되는지.
 
-### 2.3 시각화
+### 2.4 시각화
 
-- `figures/current/07_path_planning/` (신규)
-  - `exp_path_001/comparison.csv` — 72 trial 결과
-  - `fed_boxplot.png` — 3 planner 별 cumulative FED 분포
-  - `path_overlay.png` — 한 scenario 의 3 planner trajectory + risk heatmap
+- `figures/current/07_pybullet_h6/` (신규)
+  - `exp_path_001/comparison.csv` — 45 run × 5 metric
+  - `fed_boxplot.png` — 3 시나리오 × cumulative_FED 분포
+  - `success_rate_bar.png` — 3 시나리오 × 화재 격자
+  - `casualty_breakdown.png` — 시나리오별 dead/evacuated/alive 비율
+  - `demo.mp4` (~90 s) — 한 화재 시나리오 위에서 S1 vs S2 vs S3 시네마틱
 
 ---
 

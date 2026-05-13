@@ -419,6 +419,60 @@ Zone 별 분포 표 (A:3, B:5, C:4, D:5 = 17 방) + 복도 7 + 출구 3 = **27**
 
 ---
 
+## D-025: H6 재정의 + Drone Swarm 도입 (D-013 반전)
+
+**Date**: 2026-05-14
+**Decision**: H6 가설을 *"Dynamic A* 경로가 Static A* 대비 누적 FED ≥ 30%
+감소"* 에서 **"드론 군집(swarm) 기반 동적 안내가 고정 표지판 baseline
+대비 누적 FED ≥ 30% 감소"** 로 재정의. EXP-PATH-001 도 path-planning
+알고리즘 3종 비교에서 **PyBullet 기반 3 시나리오 비교** (S1 fixed-sign
+baseline / S2 FDS-driven drone swarm / S3 PI-FNO-driven drone swarm) 로
+전환. 이 결정은 `D-013` (Single Crazyflie drone for PyBullet, not swarm)
+을 **반전**한다.
+
+**Alternatives**:
+- 기존 설계 유지 (3-planner 알고리즘 비교, single Crazyflie)
+- H6 전체 폐기, H1·H4·H5 중심 paper reframe (현행 Plan B)
+- Drone swarm 도입하되 비교축은 algorithm 유지 (single drone vs swarm)
+
+**Rationale**:
+Tier 1 GNN 이 H4 (FNR 4.6%) / H5 (IoU 0.904) 를 강건히 입증한 시점에서
+H6 의 비교축은 더 이상 *algorithm A vs B* 가 아니라 *시스템이 실제로
+안전을 향상시키는가* 여야 한다. 공학 심사위원 관점에서 "고정 표지판 vs
+능동 안내" 의 대비가 "Dijkstra vs Dynamic A*" 보다 훨씬 직관적이고,
+`gym-pybullet-drones` 가 multi-agent 시뮬을 표준 지원하므로 swarm 추가
+비용은 D-013 시점 추정보다 낮아졌다. S2 vs S3 비교는 H5 의 risk-map
+fidelity 가 path quality 로 transitive 하게 연결되는지 동시에 측정
+가능해, 단일 실험이 H6 + H5 를 같이 활성화한다.
+
+**Impact**:
+- `D-013` *Single Crazyflie drone for PyBullet, not swarm*: **반전됨**
+- `D-022` 4-metric (peak_danger / time_in_hazard / aset_margin / fed_final):
+  per-trial 진단 도구로 **유지**. EXP-PATH-001 헤드라인은 새 5-metric
+  (evacuation_success_rate, mean_evacuation_time, danger_zone_exposure_time,
+  casualty_rate, cumulative_FED) 으로 대체.
+- `src/path_planning/` planner ABC 3-class 구상 → **단일 weighted A***
+  로 축소 (`EvacuationPlanner` 1개). 이미 적용 완료 (2026-05-14).
+- `src/integration/` scope **확장**: env_setup + PersonAgent
+  (1.2 m/s 등속, alive → evacuated/dead 3-state) + drone swarm
+  (Boids/APF) + scenarios + metrics. Week 12 작업.
+- `CLAUDE.md` "What This Project Does NOT Do" 에서 *"Drone swarms (single
+  Crazyflie sim)"* 항목 제거됨. 대신 *"Real human behaviour modelling"*
+  이 simplified PersonAgent 한정 캐비엇과 함께 새로 명시됨.
+
+**Pending document updates** (이 결정의 부산물):
+- `docs/pybullet_integration_spec.md` — 구버전 명세 (single drone,
+  3 planner 비교). **외주 전달 전 갱신 필요**. 본 결정 직후에는 stale
+  notice header 만 추가, 본문 전면 재작성은 별도 작업.
+- `docs/90_next_steps.md` §2 — 구버전 "Dijkstra/Static/Dynamic 72 trials"
+  흐름. §2 를 본 결정에 맞춰 갱신.
+- `experiments/exp_path_001_compare_paths.py` — skeleton docstring 이
+  구버전 "compare evacuation path strategies". 새 3-시나리오 의도 반영.
+- `tests/test_path_planning.py` — 14400-cell 그래프 가정 + 구버전
+  planner ABC. 19-node 그래프 + 단일 `EvacuationPlanner` 로 재작성.
+
+---
+
 ## How to Add a Decision
 
 When making a major scope or interface decision:

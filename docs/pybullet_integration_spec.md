@@ -1,11 +1,35 @@
 # PyBullet 통합 모듈 명세서 (Member 외주용)
 
-> **작성일**: 2026-05-13
+> ## ⚠️ STALE — 외주 전달 전 본문 전면 재작성 필요 (2026-05-14)
+>
+> 본 명세서는 **구버전 H6 정의** 기반으로 작성되었다. `D-025` (2026-05-14)
+> 로 H6 가설과 EXP-PATH-001 설계가 다음과 같이 바뀌었다:
+>
+> | 차원 | 구버전 (본 문서) | 신버전 (`CLAUDE.md` + `D-025`) |
+> |---|---|---|
+> | H6 | "Dynamic A* FED ≥ 30% ↓ vs Static A*" | "**Drone swarm** 안내 FED ≥ 30% ↓ vs **fixed sign baseline**" |
+> | 비교축 | 3 path planner (Dijkstra / Static / Dynamic) | 3 PyBullet 시나리오 (S1 fixed-sign / S2 FDS drone swarm / S3 PI-FNO drone swarm) |
+> | 드론 | **단일** Crazyflie | **Swarm** (gym-pybullet-drones, Boids/APF) |
+> | 인원 | 개념 없음 | **20 PersonAgent** (1.2 m/s, alive → evacuated/dead) |
+> | 메트릭 | FED 중심 + D-022 4-metric | 5-metric: success_rate / mean_evac_time / danger_zone_exposure / casualty_rate / cumulative_FED |
+> | H 매핑 | H6 only | **S1 vs S2 → H6**, **S2 vs S3 → H5** |
+>
+> **외주 전달 전 본문 §2–§5, §8 을 위 내용에 맞춰 재작성할 것.**
+> 현재 본문은 single-drone + 3-planner 가정이라 외주자에게 잘못된 명세가
+> 전달될 위험이 있다. §1 (프로젝트 컨텍스트), §3.1 (제공 자산), §6 (좌표·시간
+> 함정), §7 (환경/의존성) 은 대부분 그대로 유효하다.
+>
+> 권위 있는 최신 정의: `CLAUDE.md` "EXP-PATH-001 — Three Scenarios" 절 +
+> `docs/decisions.md::D-025`.
+>
+> ---
+>
+> **작성일**: 2026-05-13 (D-025 이전)
 > **대상**: PyBullet 기반 대피 시뮬레이션을 담당할 팀원/협력자
 > **위치**: `src/integration/` 디렉터리 (현재 비어 있음 — 본인이 신규 작성)
 > **프로젝트 매뉴얼상 위치**: `docs/manual_v2.md` *Phase F — Week 12*
-> **목표 산출물**: H6 가설(Dynamic A* FED ≥ 30% ↓)을 시각적으로 입증하는
-> 헤드라인 데모 영상 + 정량 비교 CSV
+> **목표 산출물** *(구버전)*: H6 가설(Dynamic A* FED ≥ 30% ↓)을 시각적으로
+> 입증하는 헤드라인 데모 영상 + 정량 비교 CSV
 >
 > 이 문서 하나만 읽으면 작업을 시작할 수 있도록 구성했다.
 > 추가 디테일이 필요할 때만 `CLAUDE.md` / `docs/interface_contracts.md` /
