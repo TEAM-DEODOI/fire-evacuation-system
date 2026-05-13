@@ -28,11 +28,12 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 
 from src.integration.metrics import ScenarioMetrics
+from src.integration.recorder import SimulationRecorder
 from src.integration.scene import Scene, SceneConfig
 from src.integration.scenarios._common import (
     BUILDING_URDF,
@@ -58,6 +59,8 @@ def run(
     t_end_s: float = 300.0,
     dt_s: float = 1.0,
     replan_period_s: float = REPLAN_PERIOD_S,
+    *,
+    recorder: Optional[SimulationRecorder] = None,
 ) -> ScenarioMetrics:
     """Execute one S2 run.
 
@@ -206,6 +209,17 @@ def run(
                         arrived[agent.agent_id] = t_now
                         break
 
+            # Optional recording (decoupled, no-op if recorder is None).
+            if recorder is not None:
+                recorder.record(
+                    t=t_now,
+                    agents=agents,
+                    risk_map=truth_rm,
+                    arrived=set(arrived.keys()),
+                    agent_extras_fn=lambda a, _es=exposure_s: {
+                        "exposure_s": _es.get(a.agent_id, 0.0),
+                    },
+                )
             scene.step()
             if len(arrived) == n_actual:
                 break
