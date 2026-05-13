@@ -1,248 +1,440 @@
-"""Building graph adapter for path planning.
+"""Building graph for path planning (cell-level grid over the SLCF region).
 
-The canonical building topology lives in :mod:`src.shared.building` —
-a 19-node L-shaped NetworkX graph with 3 exits matching
-``docs/interface_contracts.md`` §5 (target 16–20 nodes). This module is
-a *thin adapter*: it re-exports that graph in the raw ``nx.Graph`` form
-the path-planning algorithms consume, plus a ``snap_to_graph`` helper
-that maps an arbitrary world coordinate to the nearest graph node.
+Per D-026 (2026-05-14) the path-planning graph is a **fluid-cell grid**
+derived from the canonical 60 × 40 × 6 fluid mask, not the legacy
+19-node abstract graph from ``src.shared.building``. The mask is loaded
+from ``data/processed/dataset.h5`` (top-level ``mask`` dataset), which
+is the same mask the ML pipeline consumes -- so the planner's graph and
+the risk map share a 1-to-1 cell mapping by construction. This removes
+the previous mismatch between the abstract graph and the real STL.
 
-Node attributes carried on the returned graph::
+Node IDs are ``(i, j, k)`` cell-index tuples. Node attributes:
 
-    pos         : tuple[float, float, float]  — world metres
-    node_type   : "room" | "corridor" | "intersection" | "exit"
-    is_exit     : bool
-    has_detector: bool
-    node        : BuildingNode dataclass (back-pointer)
+* ``pos``      : ``(x, y, z)`` cell-center in world metres
+* ``cell_idx`` : the same ``(i, j, k)`` for convenience
+* ``is_exit``  : True iff this cell is one of the canonical exit cells
 
-Edge attributes::
+Edges are 8-connected at the chosen z-slice (cardinal + diagonal). Edge
+attributes:
 
-    length: float  — Euclidean distance in metres
-    width : float  — corridor width (for bottleneck modelling, default 1.5 m)
+* ``length`` : 0.5 m for cardinal, 0.5√2 ≈ 0.707 m for diagonal
 
-Compatibility note: the original ``build_graph(obstacle_mask, exits)``
-skeleton presumed a 14 400-cell graph. That design conflicted with
-``interface_contracts.md`` §5 and duplicated work already done in
-``src.shared.building``. The new signature keeps the same name but drops
-the cell-level intent — ``obstacle_mask`` and ``exits`` are accepted for
-future flexibility (e.g., custom layouts) and ignored when ``None``.
+The default exits are the three (x, y, z) points specified by
+``src.shared.building`` (which remains the authoritative source for
+*exit positions* even though its 19-node graph is no longer used for
+path planning -- see D-026).
 """
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from pathlib import Path
+from typing import List, Optional, Sequence, Tuple
 
+import h5py
 import networkx as nx
 import numpy as np
 
-from src.shared.building import BuildingGraph, build_default_graph
+from src.shared.constants import CELL_SIZE_M, GRID_SHAPE
 
 
-def build_graph(
-    obstacle_mask: Optional[np.ndarray] = None,
-    exits: Optional[List[Tuple[float, float, float]]] = None,
-) -> nx.Graph:
-    """Return the canonical building graph as a raw :class:`nx.Graph`.
+# ─── Defaults ─────────────────────────────────────────────────────────────
+_DEFAULT_MASK_HDF5 = Path("data/processed/dataset.h5")
+_DEFAULT_Z_LAYER = 3   # k=3 cell-center is at z = 1.75 m (breathing zone)
+_BREATHING_Z_M = 0.25 + CELL_SIZE_M * _DEFAULT_Z_LAYER   # 1.75
 
-    Args:
-        obstacle_mask: Reserved for future use (custom obstacles). When
-            supplied, currently raises :class:`NotImplementedError` to
-            surface the design departure rather than silently ignoring it.
-        exits: Reserved for future use (extra exits). Same behaviour as
-            ``obstacle_mask`` when non-``None``.
+NodeId = Tuple[int, int, int]
+
+
+def _canonical_exits() -> List[Tuple[float, float, float]]:
+    """Canonical 3-exit positions (deferring to ``shared.building``).
+
+    Wrapped in a function to avoid a hard import-time dependency on
+    NetworkX construction in ``shared.building`` for callers that only
+    want the cell grid.
+    """
+    from src.shared.building import build_default_graph
+    bg = build_default_graph()
+    return [
+        (e.pos[0], e.pos[1], e.pos[2]) for e in bg.exits
+    ]
+
+
+# ─── Fluid mask loader ────────────────────────────────────────────────────
+def load_default_fluid_mask(
+    hdf5_path: Path = _DEFAULT_MASK_HDF5,
+) -> np.ndarray:
+    """Load the canonical fluid mask from ``data/processed/dataset.h5``.
 
     Returns:
-        Undirected :class:`nx.Graph` whose nodes are string IDs (e.g.
-        ``"hall_n"``) carrying ``pos``, ``node_type``, ``is_exit``,
-        ``has_detector`` attributes. Edges carry ``length`` and ``width``.
+        ``(60, 40, 6)`` boolean array. ``True`` = fluid (navigable),
+        ``False`` = solid (wall / outside building).
 
     Raises:
-        NotImplementedError: If a non-``None`` ``obstacle_mask`` or
-            ``exits`` is passed — the L-shape layout is fixed by
-            ``shared.building`` and overriding requires a deliberate
-            schema change (see ``docs/decisions.md`` D-016).
+        FileNotFoundError: If the HDF5 is absent (run the data pipeline).
+        KeyError: If the file does not contain a top-level ``mask`` key.
     """
-    if obstacle_mask is not None:
-        raise NotImplementedError(
-            "Custom obstacle masks not supported — building topology is "
-            "fixed in src.shared.building.build_default_graph(). Modify "
-            "_DEFAULT_NODES/_DEFAULT_EDGES there if a layout change is needed."
+    if not hdf5_path.exists():
+        raise FileNotFoundError(
+            f"fluid mask source missing: {hdf5_path}. "
+            f"Run scripts/run_data_pipeline.sh to regenerate."
         )
-    if exits is not None:
-        raise NotImplementedError(
-            "Custom exit lists not supported — exits are defined in "
-            "src.shared.building._DEFAULT_NODES with is_exit=True."
+    with h5py.File(hdf5_path, "r") as f:
+        if "mask" not in f:
+            raise KeyError(
+                f"'mask' dataset missing in {hdf5_path}; "
+                f"present keys: {list(f.keys())}"
+            )
+        raw = f["mask"][...]
+    arr = np.asarray(raw)
+    if arr.shape != GRID_SHAPE:
+        raise ValueError(
+            f"fluid mask shape {arr.shape} != GRID_SHAPE {GRID_SHAPE}"
         )
-    return build_default_graph().graph
+    # HDF5 stores float32 with values {0, 1}; coerce to bool.
+    return (arr > 0.5).astype(bool)
 
 
-def add_exit_nodes(
-    graph: nx.Graph,
-    exits: List[Tuple[float, float, float]],
+# ─── Graph builder ────────────────────────────────────────────────────────
+def build_graph(
+    fluid_mask: Optional[np.ndarray] = None,
+    exits: Optional[Sequence[Tuple[float, float, float]]] = None,
+    z_layer: int = _DEFAULT_Z_LAYER,
+    connectivity: int = 8,
 ) -> nx.Graph:
-    """Mark exits in an existing graph (idempotent).
-
-    For the canonical building layout this is essentially a no-op because
-    :func:`build_graph` already tags the three exits. The function exists
-    to honour the skeleton contract and to allow injecting exits in
-    custom layouts: each ``(x, y, z)`` is snapped to the nearest existing
-    graph node, which then has ``is_exit=True`` set.
+    """Build a fluid-cell grid graph for risk-aware A*.
 
     Args:
-        graph: NetworkX graph from :func:`build_graph`.
-        exits: World coordinates ``[(x, y, z), ...]``.
+        fluid_mask: ``(60, 40, 6)`` boolean, ``True`` = fluid.
+            Loaded from :func:`load_default_fluid_mask` when ``None``.
+        exits: World coordinates of the exits to tag in the graph.
+            Defaults to the canonical 3 exits from
+            :func:`src.shared.building.build_default_graph`. Each is
+            snapped to the *nearest fluid cell at* ``z_layer`` and that
+            cell is flagged ``is_exit=True``.
+        z_layer: Which z-slice (0–5) to build the 2-D navigation graph
+            on. Default ``3`` (breathing zone at z = 1.75 m).
+        connectivity: 4 (cardinal only) or 8 (cardinal + diagonal).
+            Default ``8`` gives smoother A* paths.
 
     Returns:
-        Same graph object (mutated in place).
+        ``nx.Graph`` with node IDs ``(i, j, k)``. See module docstring
+        for attribute schema.
+
+    Raises:
+        ValueError: If ``connectivity`` is not 4 or 8, or ``z_layer``
+            is outside ``[0, 5]``.
     """
-    if not exits:
-        return graph
-    for xyz in exits:
-        nid = snap_to_graph(np.asarray(xyz, dtype=np.float64), graph)
-        graph.nodes[nid]["is_exit"] = True
-        bn = graph.nodes[nid].get("node")
-        if bn is not None:
-            # BuildingNode is frozen — replace it with an exit-tagged copy.
-            from dataclasses import replace as _replace
-            graph.nodes[nid]["node"] = _replace(bn, is_exit=True)
-    return graph
+    if connectivity not in (4, 8):
+        raise ValueError(f"connectivity must be 4 or 8, got {connectivity}")
+    nx_, ny_, nz_ = GRID_SHAPE
+    if not 0 <= z_layer < nz_:
+        raise ValueError(f"z_layer must be in [0, {nz_}), got {z_layer}")
+
+    if fluid_mask is None:
+        fluid_mask = load_default_fluid_mask()
+    fluid_mask = np.asarray(fluid_mask, dtype=bool)
+    if fluid_mask.shape != GRID_SHAPE:
+        raise ValueError(
+            f"fluid_mask shape {fluid_mask.shape} != GRID_SHAPE {GRID_SHAPE}"
+        )
+
+    z_world = 0.25 + CELL_SIZE_M * z_layer
+
+    g = nx.Graph()
+
+    # ── Add nodes (only fluid cells at z_layer) ─────────────────────
+    layer = fluid_mask[:, :, z_layer]
+    for i in range(nx_):
+        for j in range(ny_):
+            if layer[i, j]:
+                node_id = (i, j, z_layer)
+                pos = (
+                    0.25 + CELL_SIZE_M * i,
+                    0.25 + CELL_SIZE_M * j,
+                    z_world,
+                )
+                g.add_node(
+                    node_id,
+                    pos=pos,
+                    cell_idx=(i, j, z_layer),
+                    is_exit=False,
+                )
+
+    # ── Add edges (4- or 8-connected in XY plane) ───────────────────
+    cardinal = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+    diagonal = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+    cell_size = float(CELL_SIZE_M)
+    diag_len = cell_size * float(np.sqrt(2))
+
+    for i in range(nx_):
+        for j in range(ny_):
+            if not layer[i, j]:
+                continue
+            u = (i, j, z_layer)
+            for di, dj in cardinal:
+                ni, nj = i + di, j + dj
+                if (
+                    0 <= ni < nx_ and 0 <= nj < ny_
+                    and layer[ni, nj]
+                ):
+                    v = (ni, nj, z_layer)
+                    if not g.has_edge(u, v):
+                        g.add_edge(u, v, length=cell_size)
+            if connectivity == 8:
+                for di, dj in diagonal:
+                    ni, nj = i + di, j + dj
+                    if (
+                        0 <= ni < nx_ and 0 <= nj < ny_
+                        and layer[ni, nj]
+                    ):
+                        # Forbid corner-cutting through solid cells:
+                        # a diagonal (i,j)->(ni,nj) only valid if BOTH
+                        # cardinal neighbours along that corner are fluid.
+                        if not (layer[ni, j] and layer[i, nj]):
+                            continue
+                        v = (ni, nj, z_layer)
+                        if not g.has_edge(u, v):
+                            g.add_edge(u, v, length=diag_len)
+
+    # ── Tag exit cells ──────────────────────────────────────────────
+    exit_xyz_list = list(exits) if exits is not None else _canonical_exits()
+    for ex in exit_xyz_list:
+        cell = _nearest_node_xy(g, np.asarray(ex, dtype=np.float64))
+        if cell is None:
+            continue
+        g.nodes[cell]["is_exit"] = True
+
+    return g
 
 
-def snap_to_graph(xyz: np.ndarray, graph: nx.Graph) -> str:
-    """Return the ID of the graph node closest to ``xyz`` (XY distance).
+# ─── Helpers ──────────────────────────────────────────────────────────────
+def _nearest_node_xy(graph: nx.Graph, xyz: np.ndarray) -> Optional[NodeId]:
+    """Closest graph node to ``xyz`` measured in XY (single floor)."""
+    if graph.number_of_nodes() == 0:
+        return None
+    best: Optional[NodeId] = None
+    best_d2 = float("inf")
+    for nid, attrs in graph.nodes(data=True):
+        pos = attrs["pos"]
+        dx = pos[0] - xyz[0]
+        dy = pos[1] - xyz[1]
+        d2 = dx * dx + dy * dy
+        if d2 < best_d2:
+            best_d2 = d2
+            best = nid
+    return best
 
-    Single floor → Z is ignored, matching
-    :meth:`src.shared.building.BuildingGraph.nearest_node` semantics.
+
+def snap_to_graph(xyz: np.ndarray, graph: nx.Graph) -> NodeId:
+    """Return the node ID of the graph cell closest to ``xyz`` (XY only).
 
     Args:
         xyz: ``(3,)`` world coordinate in metres.
-        graph: NetworkX graph with ``pos`` node attributes.
+        graph: NetworkX graph from :func:`build_graph`.
 
     Returns:
-        Node ID of the closest node.
+        ``(i, j, k)`` tuple for the nearest fluid cell.
 
     Raises:
-        ValueError: If ``xyz`` is not 3-D or ``graph`` is empty.
+        ValueError: If ``xyz`` is not 3-D or graph is empty.
     """
     arr = np.asarray(xyz, dtype=np.float64)
     if arr.shape != (3,):
         raise ValueError(f"xyz must have shape (3,), got {arr.shape}")
     if graph.number_of_nodes() == 0:
-        raise ValueError("graph is empty — no nodes to snap to")
-
-    best_id: Optional[str] = None
-    best_d2 = float("inf")
-    for nid, attrs in graph.nodes(data=True):
-        pos = attrs.get("pos")
-        if pos is None:
-            continue
-        dx = pos[0] - arr[0]
-        dy = pos[1] - arr[1]
-        d2 = dx * dx + dy * dy
-        if d2 < best_d2:
-            best_d2 = d2
-            best_id = nid
-    if best_id is None:
-        raise ValueError("graph nodes are missing 'pos' attributes")
-    return best_id
+        raise ValueError("graph is empty -- no nodes to snap to")
+    result = _nearest_node_xy(graph, arr)
+    if result is None:
+        raise ValueError("no fluid cells in graph")
+    return result
 
 
-def exit_nodes(graph: nx.Graph) -> List[str]:
-    """Return all node IDs where ``is_exit=True``."""
+def exit_nodes(graph: nx.Graph) -> List[NodeId]:
+    """Return all node IDs flagged ``is_exit=True``."""
     return [nid for nid, a in graph.nodes(data=True) if a.get("is_exit")]
+
+
+def fluid_cells_at(
+    fluid_mask: Optional[np.ndarray] = None,
+    z_layer: int = _DEFAULT_Z_LAYER,
+) -> List[Tuple[int, int]]:
+    """List ``(i, j)`` indices of fluid cells at ``z_layer``.
+
+    Convenience for callers that want to sample spawn positions without
+    constructing the full graph.
+    """
+    if fluid_mask is None:
+        fluid_mask = load_default_fluid_mask()
+    fluid_mask = np.asarray(fluid_mask, dtype=bool)
+    nx_, ny_, _ = GRID_SHAPE
+    layer = fluid_mask[:, :, z_layer]
+    return [(i, j) for i in range(nx_) for j in range(ny_) if layer[i, j]]
+
+
+def add_exit_nodes(
+    graph: nx.Graph,
+    exits: Sequence[Tuple[float, float, float]],
+) -> nx.Graph:
+    """Tag additional exit cells in an existing graph (in place).
+
+    Each ``(x, y, z)`` is snapped to its nearest fluid cell, which is
+    then flagged ``is_exit=True``. Existing exit tags are preserved.
+    """
+    for ex in exits:
+        cell = _nearest_node_xy(graph, np.asarray(ex, dtype=np.float64))
+        if cell is not None:
+            graph.nodes[cell]["is_exit"] = True
+    return graph
 
 
 # ─── Self-test ────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    import sys
+
     print("=" * 60)
-    print("building_graph.py self-test")
+    print("building_graph.py self-test (D-026 cell-grid)")
     print("=" * 60)
 
-    errors: List[str] = []
+    errors: list[str] = []
 
-    # ── 1. build_graph returns connected nx.Graph ──────────────────────
-    print("\n[1] build_graph() returns connected nx.Graph")
+    if not _DEFAULT_MASK_HDF5.exists():
+        print(f"FAIL: {_DEFAULT_MASK_HDF5} missing; cannot run self-test")
+        sys.exit(1)
+
+    # ── 1. Load fluid mask ──────────────────────────────────────────
+    print("\n[1] Load default fluid mask")
+    mask = load_default_fluid_mask()
+    print(
+        f"  shape={mask.shape}  dtype={mask.dtype}  "
+        f"fluid fraction={mask.mean():.3f}"
+    )
+    if mask.shape != GRID_SHAPE:
+        errors.append(f"mask shape {mask.shape} != {GRID_SHAPE}")
+
+    # ── 2. Build default grid graph ─────────────────────────────────
+    print("\n[2] build_graph() with defaults")
     g = build_graph()
-    if not isinstance(g, nx.Graph):
-        errors.append(f"build_graph returned {type(g).__name__}, not nx.Graph")
-    if not nx.is_connected(g):
-        errors.append("graph not connected")
-    print(f"  nodes={g.number_of_nodes()} edges={g.number_of_edges()}")
-    if not (16 <= g.number_of_nodes() <= 20):
-        errors.append(f"node count {g.number_of_nodes()} outside [16, 20]")
+    n_nodes = g.number_of_nodes()
+    n_edges = g.number_of_edges()
+    expected_max = int(GRID_SHAPE[0] * GRID_SHAPE[1])  # 2400 if all fluid
+    print(
+        f"  nodes={n_nodes}  edges={n_edges}  "
+        f"(max possible at z_layer: {expected_max})"
+    )
+    if not (500 <= n_nodes <= expected_max):
+        errors.append(
+            f"node count {n_nodes} outside plausible range "
+            f"[500, {expected_max}]"
+        )
+    if n_edges < n_nodes:
+        errors.append(f"edges < nodes -- graph too sparse")
 
-    # ── 2. Node attributes present ──────────────────────────────────────
-    print("\n[2] Required node attributes present")
-    for nid, a in g.nodes(data=True):
-        for key in ("pos", "node_type", "is_exit"):
-            if key not in a:
-                errors.append(f"node {nid} missing attribute {key!r}")
-                break
+    # ── 3. Connectivity sanity ──────────────────────────────────────
+    print("\n[3] Connectivity structure (real buildings have isolated rooms)")
+    components = sorted(
+        (sorted(c, key=lambda n: (n[0], n[1])) for c in nx.connected_components(g)),
+        key=len, reverse=True,
+    )
+    largest = components[0]
+    print(
+        f"  components={len(components)}  largest={len(largest)}  "
+        f"coverage={len(largest)/n_nodes:.3f}"
+    )
+    # Top 5 sizes for inspection
+    sizes = [len(c) for c in components[:5]]
+    print(f"  top component sizes: {sizes}")
 
-    # ── 3. Three exits ─────────────────────────────────────────────────
-    print("\n[3] Exactly 3 exits")
-    ex = exit_nodes(g)
-    print(f"  exits = {ex}")
-    if len(ex) != 3:
-        errors.append(f"exit count {len(ex)} != 3")
+    # ── 4. Exit cells tagged + all reachable from main component ────
+    print("\n[4] Three exits tagged AND all in the same component")
+    exits_in_graph = exit_nodes(g)
+    print(f"  exit cells = {exits_in_graph}")
+    if len(exits_in_graph) != 3:
+        errors.append(f"expected 3 exits, got {len(exits_in_graph)}")
+    for ex_cell in exits_in_graph:
+        if ex_cell not in g:
+            errors.append(f"exit cell {ex_cell} not in graph")
+    # All exits must be in ONE component (otherwise no full evacuation possible).
+    exit_components = []
+    for c in components:
+        c_set = set(c)
+        cnt = sum(1 for ex in exits_in_graph if ex in c_set)
+        if cnt > 0:
+            exit_components.append((len(c), cnt))
+    print(f"  components containing exits: {exit_components}")
+    if len(exit_components) > 1:
+        errors.append(
+            f"exits are split across {len(exit_components)} components"
+        )
+    elif exit_components and exit_components[0][1] != 3:
+        errors.append(
+            f"only {exit_components[0][1]}/3 exits in their component"
+        )
 
-    # ── 4. Edge attributes ─────────────────────────────────────────────
-    print("\n[4] Every edge has positive length")
-    bad = [
-        (u, v) for u, v, a in g.edges(data=True)
-        if not a.get("length", 0.0) > 0.0
-    ]
-    if bad:
-        errors.append(f"{len(bad)} edges with non-positive length: {bad[:3]}")
+    # ── 5. snap_to_graph round-trip ─────────────────────────────────
+    print("\n[5] snap_to_graph at SLCF region centre")
+    centre = np.array([15.0, 10.0, _BREATHING_Z_M])
+    snapped = snap_to_graph(centre, g)
+    print(f"  snap({tuple(centre)}) -> {snapped}")
+    # Cell center should be close to the input (within 1 cell).
+    sx, sy, sz = g.nodes[snapped]["pos"]
+    if (
+        abs(sx - centre[0]) > CELL_SIZE_M
+        or abs(sy - centre[1]) > CELL_SIZE_M
+    ):
+        errors.append(
+            f"snap drifted: input {centre}, got pos ({sx},{sy},{sz})"
+        )
 
-    # ── 5. snap_to_graph ───────────────────────────────────────────────
-    print("\n[5] snap_to_graph centre vs corner")
-    nid_centre = snap_to_graph(np.array([15.0, 10.0, 1.5]), g)
-    nid_corner = snap_to_graph(np.array([0.0, 0.0, 1.5]), g)
-    print(f"  (15, 10) → {nid_centre}")
-    print(f"  ( 0,  0) → {nid_corner}")
-    if nid_centre not in {"hall_n", "hall_s", "hall_e", "hall_w"}:
-        errors.append(f"centre snap → unexpected {nid_centre}")
-    if nid_corner not in {"exit_west", "zone_b_west"}:
-        errors.append(f"corner snap → unexpected {nid_corner}")
-
-    # ── 6. snap_to_graph shape validation ───────────────────────────────
-    print("\n[6] snap_to_graph rejects bad shapes")
+    # ── 6. snap_to_graph rejects bad shapes ─────────────────────────
+    print("\n[6] snap_to_graph rejects non-(3,)")
     try:
         snap_to_graph(np.array([1.0, 2.0]), g)
     except ValueError:
-        print("  PASS: (2,) → ValueError")
+        print("  PASS: (2,) -> ValueError")
     else:
-        errors.append("(2,) input did not raise ValueError")
+        errors.append("(2,) did not raise")
 
-    # ── 7. add_exit_nodes idempotency ──────────────────────────────────
-    print("\n[7] add_exit_nodes is idempotent for existing exits")
-    before = set(exit_nodes(g))
-    add_exit_nodes(g, [(0.0, 5.0, 1.5)])  # exit_west position
-    after = set(exit_nodes(g))
-    if before != after:
+    # ── 7. fluid_cells_at gives same nodes ──────────────────────────
+    print("\n[7] fluid_cells_at(z=3) length matches graph node count")
+    cells = fluid_cells_at(mask, z_layer=_DEFAULT_Z_LAYER)
+    print(f"  cells = {len(cells)}")
+    if len(cells) != n_nodes:
         errors.append(
-            f"add_exit_nodes mutated exit set: {before} -> {after}"
+            f"fluid_cells_at count {len(cells)} != graph node count {n_nodes}"
         )
-    else:
-        print("  PASS")
 
-    # ── 8. build_graph rejects custom mask/exits ────────────────────────
-    print("\n[8] build_graph rejects unsupported overrides")
-    for kw in ({"obstacle_mask": np.zeros((60, 40, 6), dtype=bool)},
-               {"exits": [(1.0, 1.0, 1.5)]}):
-        try:
-            build_graph(**kw)
-        except NotImplementedError:
-            pass
-        else:
-            errors.append(f"build_graph did not reject {list(kw)[0]}")
-    print("  PASS")
+    # ── 8. Diagonal corner-cutting forbidden ────────────────────────
+    # Spot check: pick a wall edge and verify the diagonal *around* it
+    # is not an edge in the graph.
+    print("\n[8] Diagonal corner-cutting forbidden")
+    layer = mask[:, :, _DEFAULT_Z_LAYER]
+    found_test = False
+    for i in range(1, GRID_SHAPE[0] - 1):
+        for j in range(1, GRID_SHAPE[1] - 1):
+            if (
+                layer[i, j]
+                and layer[i + 1, j + 1]
+                and not (layer[i + 1, j] or layer[i, j + 1])
+            ):
+                u = (i, j, _DEFAULT_Z_LAYER)
+                v = (i + 1, j + 1, _DEFAULT_Z_LAYER)
+                if g.has_edge(u, v):
+                    errors.append(
+                        f"diagonal {u}<->{v} should not exist (both "
+                        f"cardinals blocked)"
+                    )
+                else:
+                    print(f"  PASS: no corner-cut edge at {u}<->{v}")
+                found_test = True
+                break
+        if found_test:
+            break
+    if not found_test:
+        print("  (no corner-cutting test case found in mask -- skip)")
 
-    # ── Verdict ────────────────────────────────────────────────────────
+    # ── Verdict ────────────────────────────────────────────────────
     if errors:
         print("\nFAIL")
         for e in errors:
             print(f"  - {e}")
-        raise SystemExit(1)
-
-    print("\nPASS: building_graph adapter validated")
+        sys.exit(1)
+    print("\nPASS: cell-grid building_graph validated")

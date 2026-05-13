@@ -1,24 +1,20 @@
-"""Risk-aware edge weights for the building graph.
+"""Risk-aware edge weights for the cell-grid building graph (D-026).
 
-Each edge ``(u, v)`` carries a static ``length`` (metres). Edge weight for
-A* is computed as::
+Each edge ``(u, v)`` connects two adjacent fluid cells (0.5 m cardinal or
+0.707 m diagonal). Edge weight for A* is::
 
-    weight(u → v) = base_cost · length + risk_scale · integrated_risk(u, v, t)
+    weight(u → v) = base_cost · length + risk_scale · mean(risk_u, risk_v)
 
-where ``integrated_risk`` is the mean of ``risk_map.query`` evaluated at
-``n_samples`` evenly-spaced points along the edge segment. An edge whose
-integrated risk exceeds ``risk_threshold`` is flagged ``passable=False``;
-:func:`remove_impassable_edges` deletes such edges so the planner cannot
-route through hazardous corridors.
+where ``risk_u`` / ``risk_v`` come from a single ``risk_map.query`` call
+at each cell's centre. This is the **cell-discrete** analogue of the
+previous N-sample edge integration -- at 0.5 m per edge the endpoints
+are already close enough that mid-point sampling adds nothing. Edges
+whose mean risk exceeds ``risk_threshold`` are flagged
+``passable=False``; :func:`remove_impassable_edges` removes them.
 
-Sampling N=5 by default — small enough to stay cheap, dense enough to
-catch a fire occupying part of a corridor. Numbers come from
-``configs/path_planning.yaml`` and ``docs/interface_contracts.md`` §5.
-
-The functions in this module mutate ``graph`` *in place*. Callers that
-need a snapshot of the weights for repeated planning at a fixed time
-should pass a deepcopied graph, or just re-call :func:`compute_edge_weights`
-at each replan tick.
+The functions mutate ``graph`` *in place*. Callers that need a snapshot
+of the weights for repeated planning at a fixed time should pass a
+deepcopied graph or re-call :func:`compute_edge_weights` each replan tick.
 """
 from __future__ import annotations
 
@@ -134,18 +130,21 @@ def compute_edge_weights(
 ) -> None:
     """Set ``weight``, ``edge_risk``, and ``passable`` on every edge (in place).
 
+    Cell-grid optimisation (D-026): each cell's risk is queried **once**
+    (not once per edge sample), then edges between adjacent cells average
+    their endpoints' risks. This is O(N_nodes + N_edges) instead of the
+    legacy O(N_edges · N_samples).
+
     For each undirected edge ``(u, v)``:
 
-    * ``edge_risk = integrated_edge_risk(pos_u, pos_v, risk_map, t, N)``
+    * ``edge_risk = (risk_u + risk_v) / 2``
     * ``weight   = base_cost · length + risk_scale · edge_risk``
     * ``passable = edge_risk ≤ risk_threshold``
 
-    The mutation is idempotent — repeated calls with the same risk map
-    and ``t`` produce identical attributes.
-
     Args:
-        graph: Building graph from :func:`src.path_planning.building_graph.build_graph`.
-        risk_map: :class:`RiskMap` consulted at every sample point.
+        graph: Cell-grid from
+            :func:`src.path_planning.building_graph.build_graph`.
+        risk_map: :class:`RiskMap` consulted once per cell.
         t: Simulation time in seconds.
         config: Hyperparameters. Defaults to :class:`EdgeWeightConfig()`.
 
@@ -154,6 +153,15 @@ def compute_edge_weights(
             edge is missing ``length``.
     """
     cfg = config or EdgeWeightConfig()
+
+    # Query each node's risk once and cache.
+    node_risk: dict = {}
+    for nid, attrs in graph.nodes(data=True):
+        pos = attrs.get("pos")
+        if pos is None:
+            raise ValueError(f"node {nid} missing 'pos' attribute")
+        node_risk[nid] = float(risk_map.query(np.asarray(pos), t=t))
+
     for u, v, attrs in graph.edges(data=True):
         length = attrs.get("length")
         if length is None or length <= 0:
@@ -161,8 +169,7 @@ def compute_edge_weights(
                 f"edge ({u}, {v}) missing positive 'length' attribute "
                 f"(got {length!r})"
             )
-        pu, pv = _edge_endpoints_xyz(graph, u, v)
-        risk = integrated_edge_risk(pu, pv, risk_map, t, cfg.n_samples)
+        risk = 0.5 * (node_risk[u] + node_risk[v])
         attrs["edge_risk"] = risk
         attrs["weight"] = cfg.base_cost * float(length) + cfg.risk_scale * risk
         attrs["passable"] = risk <= cfg.risk_threshold
@@ -256,18 +263,21 @@ if __name__ == "__main__":
         errors.append("weight not set on every edge")
 
     # ── 4. Weight = base_cost*length + risk_scale*risk (formula check) ─
-    print("\n[4] Weight formula check on hall_n ↔ hall_e edge")
-    if g.has_edge("hall_n", "hall_e"):
-        a = g["hall_n"]["hall_e"]
-        expected = cfg.base_cost * a["length"] + cfg.risk_scale * a["edge_risk"]
-        if abs(a["weight"] - expected) > 1e-6:
-            errors.append(
-                f"weight drift: got {a['weight']:.4f}, expected {expected:.4f}"
-            )
-        else:
-            print(f"  PASS: weight = {a['weight']:.4f}, edge_risk={a['edge_risk']:.3f}")
+    print("\n[4] Weight formula check on an arbitrary edge")
+    # Cell-grid graph uses (i, j, k) tuple IDs.
+    # Pick the first edge that exists for a deterministic spot check.
+    edge_iter = iter(g.edges(data=True))
+    u, v, a = next(edge_iter)
+    expected = cfg.base_cost * a["length"] + cfg.risk_scale * a["edge_risk"]
+    if abs(a["weight"] - expected) > 1e-6:
+        errors.append(
+            f"weight drift: got {a['weight']:.4f}, expected {expected:.4f}"
+        )
     else:
-        errors.append("expected edge hall_n ↔ hall_e missing")
+        print(
+            f"  PASS: edge {u}<->{v}  length={a['length']:.3f}  "
+            f"edge_risk={a['edge_risk']:.3f}  weight={a['weight']:.4f}"
+        )
 
     # ── 5. Edges through hot zone marked impassable (lower threshold) ──
     # Default risk_threshold=0.9 is intentionally strict (a corridor that

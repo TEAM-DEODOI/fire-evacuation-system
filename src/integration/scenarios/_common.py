@@ -20,15 +20,20 @@ underscore. Tests / external callers should go through the public
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
 from src.integration.person_agent import PersonAgent
 from src.integration.scene import Scene
-from src.path_planning.building_graph import build_graph, exit_nodes
+from src.path_planning.building_graph import (
+    build_graph,
+    exit_nodes,
+    fluid_cells_at,
+    load_default_fluid_mask,
+)
 from src.risk_map.risk_map_class import RiskMap, StaticRiskMap
-from src.shared.constants import DT_SLCF, GRID_SHAPE, N_TIMESTEPS
+from src.shared.constants import CELL_SIZE_M, DT_SLCF, GRID_SHAPE, N_TIMESTEPS
 
 
 # ─── Constants ────────────────────────────────────────────────────────────
@@ -159,32 +164,69 @@ def spawn_agents(
     scene: Scene,
     n_persons: int,
     seed: int,
+    *,
+    fluid_mask: Optional[np.ndarray] = None,
+    only_exit_reachable: bool = True,
 ) -> List[PersonAgent]:
-    """Spawn up to ``n_persons`` agents at distinct room-node centres.
+    """Spawn agents at random fluid cells inside the building (D-026).
 
-    Each agent's start XY is jittered uniformly within ±0.3 m of the
-    canonical room-node position to avoid stacking on the same spot.
-    The choice of which room nodes are picked is deterministic for a
-    given ``seed``.
+    Samples uniformly from the set of fluid cells at the breathing-zone
+    z-layer (``k=3``). When ``only_exit_reachable`` (default) the pool
+    is restricted to the connected component containing the three exit
+    cells, so every spawned agent has at least one viable path to an
+    exit. The agent's XY is jittered uniformly within
+    ``±(CELL_SIZE_M/2 - capsule_radius)`` of the cell centre so the
+    capsule stays inside the chosen cell.
+
+    Args:
+        scene: Active :class:`Scene`.
+        n_persons: Max agents to spawn (capped at fluid-cell count).
+        seed: RNG seed for cell selection and jitter.
+        fluid_mask: ``(60, 40, 6)`` boolean mask. Loaded from
+            ``data/processed/dataset.h5`` when ``None``.
+        only_exit_reachable: If ``True``, restrict the spawn pool to
+            cells in the same connected component as the 3 exits.
+
+    Returns:
+        List of :class:`PersonAgent`.
+
+    Raises:
+        RuntimeError: If no fluid cells are available.
     """
-    graph = build_graph()
-    room_node_ids = [
-        nid for nid, attrs in graph.nodes(data=True)
-        if attrs.get("node_type") == "room"
-    ]
-    if not room_node_ids:
-        raise RuntimeError("building graph has no room nodes")
+    if fluid_mask is None:
+        fluid_mask = load_default_fluid_mask()
+    cells = fluid_cells_at(fluid_mask, z_layer=3)
+    if not cells:
+        raise RuntimeError("no fluid cells available for spawn")
+
+    if only_exit_reachable:
+        import networkx as nx
+        graph = build_graph(fluid_mask=fluid_mask)
+        exit_ids = exit_nodes(graph)
+        if exit_ids:
+            exit_component = nx.node_connected_component(graph, exit_ids[0])
+            if all(e in exit_component for e in exit_ids):
+                cells = [(i, j) for (i, j, _k) in exit_component]
 
     rng = np.random.default_rng(seed)
-    n = min(n_persons, len(room_node_ids))
-    chosen = list(rng.choice(room_node_ids, size=n, replace=False))
+    n = min(n_persons, len(cells))
+    indices = rng.choice(len(cells), size=n, replace=False)
+
+    # Capsule radius 0.25 m in a 0.5 m cell -> max safe jitter 0.20 m.
+    max_jitter = max(0.05, CELL_SIZE_M / 2 - 0.30)
+    z_breathing = 0.25 + CELL_SIZE_M * 3  # 1.75 m
 
     agents: List[PersonAgent] = []
-    for i, nid in enumerate(chosen):
-        base = np.asarray(graph.nodes[nid]["pos"], dtype=np.float64)
-        jitter = rng.uniform(-0.3, 0.3, size=2)
-        start = np.array([base[0] + jitter[0], base[1] + jitter[1], base[2]])
-        a = PersonAgent(agent_id=f"person_{i}_{nid}")
+    for k_idx, cell_idx in enumerate(indices):
+        i, j = cells[int(cell_idx)]
+        cx = 0.25 + CELL_SIZE_M * i
+        cy = 0.25 + CELL_SIZE_M * j
+        jitter = rng.uniform(-max_jitter, max_jitter, size=2)
+        start = np.array(
+            [cx + jitter[0], cy + jitter[1], z_breathing],
+            dtype=np.float64,
+        )
+        a = PersonAgent(agent_id=f"person_{k_idx}_cell_{i}_{j}")
         a.spawn(scene.client, start)
         agents.append(a)
     return agents

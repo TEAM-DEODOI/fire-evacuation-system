@@ -51,6 +51,7 @@ from src.integration.scenarios._common import (
     spawn_agents,
     zero_risk_map,
 )
+from src.path_planning.building_graph import load_default_fluid_mask
 from src.risk_map.risk_map_class import RiskMap
 
 
@@ -174,10 +175,10 @@ def run(
     )
     scene = Scene.create(cfg)
     try:
-        obstacles = [scene.building_id]
+        fluid_mask = load_default_fluid_mask()
         truth_rm = load_truth_risk_map(fds_dir, verbose=True)
         exits_xyz = exit_positions()
-        agents = spawn_agents(scene, n_persons, seed)
+        agents = spawn_agents(scene, n_persons, seed, fluid_mask=fluid_mask)
         n_actual = len(agents)
         # Per fairness setup (interface_contracts.md sect. 6) the planner
         # and the experienced truth use the SAME RiskMap in S1. Drone
@@ -207,7 +208,7 @@ def run(
                     scene.client,
                     wp,
                     dt_s,
-                    obstacle_body_ids=obstacles,
+                    fluid_mask=fluid_mask,
                 )
                 # Accumulate exposure at the post-move position. The
                 # truth map is the same instance the FixedSignNetwork
@@ -280,16 +281,18 @@ if __name__ == "__main__":
     exits = exit_positions()
     print(f"  exits = {[tuple(round(v, 1) for v in e) for e in exits]}")
     net = FixedSignNetwork(risk_map=rm, exit_positions=exits, danger_threshold=0.5)
-    # Agent at (5, 4): nearest is exit_west (0, 5) dist ~5.1
+    # Agent at (5, 4): nearest is exit_west (~0, ~5). After D-026 the
+    # exit position is the nearest fluid-cell centre (0.25, 4.75, 1.75)
+    # rather than the building.py canonical point (0, 5, 1.5).
     wp_b = net.next_waypoint(np.array([5.0, 4.0, 1.5]), t=0.0)
-    print(f"  query (5, 4)  -> {tuple(round(v, 1) for v in wp_b)}")
-    if abs(wp_b[0] - 0.0) > 1e-6 or abs(wp_b[1] - 5.0) > 1e-6:
-        errors.append(f"expected exit_west (0, 5), got {wp_b}")
-    # Agent at (28, 16): nearest is exit_east (30, 13) dist sqrt(4+9)=3.6
+    print(f"  query (5, 4)  -> {tuple(round(v, 2) for v in wp_b)}")
+    if abs(wp_b[0]) > 0.5 or abs(wp_b[1] - 5.0) > 0.5:
+        errors.append(f"expected near exit_west (~0, ~5), got {wp_b}")
+    # Agent at (28, 16): nearest is exit_east (~30, ~13)
     wp_e = net.next_waypoint(np.array([28.0, 16.0, 1.5]), t=0.0)
-    print(f"  query (28, 16) -> {tuple(round(v, 1) for v in wp_e)}")
-    if abs(wp_e[0] - 30.0) > 1e-6 or abs(wp_e[1] - 13.0) > 1e-6:
-        errors.append(f"expected exit_east (30, 13), got {wp_e}")
+    print(f"  query (28, 16) -> {tuple(round(v, 2) for v in wp_e)}")
+    if abs(wp_e[0] - 30.0) > 0.5 or abs(wp_e[1] - 13.0) > 0.5:
+        errors.append(f"expected near exit_east (~30, ~13), got {wp_e}")
 
     # ── 3. Zero-risk smoke: non-existent fds_dir -> fallback ─────────
     print("\n[3] run() smoke: 5 agents, 60 s, no FDS (fallback to zero risk)")

@@ -42,6 +42,7 @@ from src.integration.scenarios._common import (
     load_truth_risk_map,
     spawn_agents,
 )
+from src.path_planning.building_graph import load_default_fluid_mask
 from src.path_planning.edge_weights import EdgeWeightConfig
 from src.path_planning.planners import EvacuationPlanner
 from src.shared.constants import REPLAN_PERIOD_S
@@ -115,10 +116,10 @@ def run(
     )
     scene = Scene.create(cfg)
     try:
-        obstacles = [scene.building_id]
+        fluid_mask = load_default_fluid_mask()
         truth_rm = load_truth_risk_map(fds_dir, verbose=True)
         exits_xyz = exit_positions()
-        agents = spawn_agents(scene, n_persons, seed)
+        agents = spawn_agents(scene, n_persons, seed, fluid_mask=fluid_mask)
         n_actual = len(agents)
 
         # Planner: risk_threshold=0.95 means only near-saturated risk
@@ -182,7 +183,7 @@ def run(
                         scene.client,
                         wp,
                         dt_s,
-                        obstacle_body_ids=obstacles,
+                        fluid_mask=fluid_mask,
                     )
                     # Advance to next waypoint if reached.
                     if (

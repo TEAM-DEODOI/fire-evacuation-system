@@ -288,11 +288,9 @@ if __name__ == "__main__":
         errors.append("fire-map plan returned empty path")
     else:
         ids_fire = [snap_to_graph(p, g) for p in path_fire]
-        print(f"  fire path: {' → '.join(ids_fire[1:])}")
-        # Must not traverse hall_n/hall_e (impassable under fire).
-        for blocked in ("hall_n", "hall_e", "hall_w"):
-            # hall_w is also adjacent to the fire zone X=[10,22]
-            pass
+        # Cell-grid node IDs are (i, j, k) tuples -- format for printing.
+        path_str = " -> ".join(str(c) for c in ids_fire[1:6])
+        print(f"  fire path (first 5 hops): {path_str}  (total {len(ids_fire)})")
         # Stronger structural check: weight along returned path must use
         # only edges with edge_risk <= threshold (i.e. all sub-impassable).
         # We re-evaluate to confirm.

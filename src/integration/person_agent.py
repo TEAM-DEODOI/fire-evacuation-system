@@ -195,39 +195,57 @@ class PersonAgent:
         target_xyz: np.ndarray,
         dt_s: float,
         *,
-        obstacle_body_ids: List[int],
+        obstacle_body_ids: Optional[List[int]] = None,
+        fluid_mask: Optional[np.ndarray] = None,
         walking_speed_mps: Optional[float] = None,
     ) -> bool:
         """Advance one tick toward ``target_xyz`` with collision veto.
 
+        Two collision-check modes (mutually exclusive):
+
+        * **fluid_mask mode** (D-026, preferred for cell-grid planning):
+          pass ``fluid_mask=(60, 40, 6)`` boolean. The candidate XY is
+          mapped to a cell index via ``world_to_grid``; the move is
+          allowed iff that cell is fluid (``True``). Bypasses PyBullet
+          collision -- accurate for any STL because it matches the
+          canonical risk-map discretisation.
+        * **PyBullet mode** (legacy, M2-mini placeholder URDF):
+          pass ``obstacle_body_ids=[scene.building_id]``. The candidate
+          pose is tentatively applied and ``getClosestPoints(distance=0)``
+          rejects penetrating moves. Subject to mesh-collision quirks
+          on real STL geometry (L-015 + see D-026 rationale).
+
         Algorithm:
         1. Compute step distance = ``walking_speed * dt_s`` (capped at
            the remaining XY distance to ``target_xyz``).
-        2. Tentatively move to the candidate position via
-           ``resetBasePositionAndOrientation``.
-        3. Run ``performCollisionDetection`` and check
-           ``getContactPoints`` against each id in ``obstacle_body_ids``.
-        4. If any contact: revert pose, return ``False``.
-        5. Otherwise: keep new pose, update ``self.position``, return ``True``.
+        2. Compute candidate position.
+        3. Run the selected collision check.
+        4. If blocked: do **not** update ``self.position``; return
+           ``False``.
+        5. Otherwise: update ``self.position`` (and the PyBullet body
+           pose if there is one), return ``True``.
 
         Args:
             client: PyBullet physics client id.
             target_xyz: Goal position. Only XY are used.
             dt_s: Outer-loop step in seconds.
             obstacle_body_ids: PyBullet body ids that should block motion
-                (typically ``[scene.building_id]``). The floor is *not*
-                in this list -- contacts with it are ignored implicitly
-                because the capsule is lifted to rest on it.
+                (typically ``[scene.building_id]``). Mutually exclusive
+                with ``fluid_mask``.
+            fluid_mask: ``(60, 40, 6)`` boolean array where ``True`` =
+                navigable. Preferred over ``obstacle_body_ids`` (D-026).
             walking_speed_mps: Override the agent's configured speed for
                 this step. Defaults to ``config.walking_speed_mps``.
 
         Returns:
             ``True`` if the move was applied (or already at target).
-            ``False`` if blocked by an obstacle and the move was reverted.
+            ``False`` if blocked.
 
         Raises:
             RuntimeError: If :meth:`spawn` has not been called.
-            ValueError: If ``target_xyz`` is not 3-D or ``dt_s <= 0``.
+            ValueError: If ``target_xyz`` is not 3-D, ``dt_s <= 0``,
+                or both / neither of ``obstacle_body_ids`` and
+                ``fluid_mask`` are provided.
         """
         if self.body_id < 0:
             raise RuntimeError(
@@ -238,6 +256,11 @@ class PersonAgent:
             raise ValueError(f"target_xyz must be (3,), got {target.shape}")
         if dt_s <= 0:
             raise ValueError(f"dt_s must be > 0, got {dt_s}")
+        if (fluid_mask is None) == (obstacle_body_ids is None):
+            raise ValueError(
+                "step_toward requires exactly one of fluid_mask or "
+                "obstacle_body_ids"
+            )
 
         speed = (
             float(walking_speed_mps)
@@ -261,18 +284,35 @@ class PersonAgent:
             dtype=np.float64,
         )
 
-        # Tentatively place body at candidate.
+        # ── Mode A: fluid-mask collision (D-026, preferred) ─────────────
+        if fluid_mask is not None:
+            from src.shared.coordinates import world_to_grid
+            cell = world_to_grid(np.asarray(candidate))
+            ix, iy, iz = int(cell[0]), int(cell[1]), int(cell[2])
+            nx_, ny_, nz_ = fluid_mask.shape
+            in_bounds = 0 <= ix < nx_ and 0 <= iy < ny_ and 0 <= iz < nz_
+            if not in_bounds or not bool(fluid_mask[ix, iy, iz]):
+                return False
+            # Move accepted: update body pose (kinematic) + cached position.
+            p.resetBasePositionAndOrientation(
+                self.body_id,
+                candidate.tolist(),
+                [0.0, 0.0, 0.0, 1.0],
+                physicsClientId=client,
+            )
+            self.position = candidate
+            return True
+
+        # ── Mode B: PyBullet contact-based collision (legacy) ───────────
+        # ``getContactPoints`` does not report mass-0 vs mass-0 (L-015).
+        # Use ``getClosestPoints(distance=0.0)`` which probes the current
+        # pose directly regardless of body mass.
         p.resetBasePositionAndOrientation(
             self.body_id,
             candidate.tolist(),
             [0.0, 0.0, 0.0, 1.0],
             physicsClientId=client,
         )
-        # NOTE: ``getContactPoints`` only reports contacts produced by the
-        # dynamic-physics solver, and mass-0 (static) bodies — both our
-        # building URDF *and* our kinematic capsule — do not populate the
-        # contact buffer. Use ``getClosestPoints(distance=0.0)`` instead,
-        # which probes the current pose directly regardless of body mass.
         for other in obstacle_body_ids:
             if other == self.body_id:
                 continue
@@ -283,7 +323,6 @@ class PersonAgent:
                 physicsClientId=client,
             )
             if overlaps:
-                # Revert -- candidate penetrates an obstacle.
                 p.resetBasePositionAndOrientation(
                     self.body_id,
                     self.position.tolist(),

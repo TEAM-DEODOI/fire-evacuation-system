@@ -46,6 +46,7 @@ from src.integration.scenarios._common import (
     load_truth_risk_map,
     spawn_agents,
 )
+from src.path_planning.building_graph import load_default_fluid_mask
 from src.path_planning.edge_weights import EdgeWeightConfig
 from src.path_planning.planners import EvacuationPlanner
 from src.risk_map.risk_map_class import RiskMap
@@ -251,13 +252,13 @@ def run(
     )
     scene = Scene.create(cfg)
     try:
-        obstacles = [scene.building_id]
+        fluid_mask = load_default_fluid_mask()
         truth_rm = load_truth_risk_map(fds_dir, verbose=True)
         planner_rm = _load_tier1_planner_rm(
             fire_scenario_id, fall_back=truth_rm, verbose=True
         )
         exits_xyz = exit_positions()
-        agents = spawn_agents(scene, n_persons, seed)
+        agents = spawn_agents(scene, n_persons, seed, fluid_mask=fluid_mask)
         n_actual = len(agents)
 
         planner = EvacuationPlanner(
@@ -316,7 +317,7 @@ def run(
                         scene.client,
                         wp,
                         dt_s,
-                        obstacle_body_ids=obstacles,
+                        fluid_mask=fluid_mask,
                     )
                     if (
                         float(np.linalg.norm(agent.position[:2] - wp[:2]))
