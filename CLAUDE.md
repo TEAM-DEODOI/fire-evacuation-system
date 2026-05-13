@@ -500,7 +500,7 @@ figures/           — paper/slide figures
 
 ---
 
-## Current Project State (2026-05-13)
+## Current Project State (2026-05-14)
 
 > **Resume here**: `docs/README.md` (index) → `docs/00_project_overview.md`
 > → `docs/70_results_summary.md` (모든 결과) → `docs/90_next_steps.md`
@@ -526,19 +526,43 @@ figures/           — paper/slide figures
 - **Sparse-input ConvLSTM (L4e)**: IoU 0.182 conservative bias →
   re-sparsify fix → IoU 0.581
 - Documentation 재구성 — numbered `00_*`~`90_*` + `docs/archive/`
-- PyBullet integration spec (`docs/pybullet_integration_spec.md`) — 외주 전달용
-- **Path planning 모듈 (`src/path_planning/`) — 미완성**
-  (`building_graph.py` / `edge_weights.py` / `planners.py` / `evacuation_sim.py`
-  파일은 존재하나 통합·검증 미완)
+- **Path planning 모듈 (`src/path_planning/`) — 완료 (2026-05-14)**
+  - `building_graph.py` thin adapter over `shared/building.py` 19-node graph
+  - `edge_weights.py` weighted A* edges with N-sample integrated risk + impassable filter
+  - `planners.py` single `EvacuationPlanner` (3-class ABC 폐기 per D-025)
+  - `evacuation_sim.py` NumPy-only logical single-occupant trial
+  - Self-test 4/4 PASS; integration smoke `scripts/smoke_tier1_pipeline.py` PASS
+- **Tier1RiskMap 어댑터 검증 완료** — `src/tier1/tier1_risk_map.py` 9/9 self-test PASS,
+  헤드라인 체크포인트와 shape 호환 확인
+- **PyBullet integration `src/integration/` — D-025 9-module skeleton landed**
+  - Functional: `scene.py` (placeholder URDF loads, 8/8 PASS), `urdf_builder.py`
+    (`build_placeholder_urdf` 9-box L-shape, 6/6 PASS), `person_agent.py`
+    (M2-mini: spawn + kinematic walk + `getClosestPoints` wall veto, 7/7 PASS),
+    `metrics.py` (5-metric dataclass + CSV + `h6_verdict`), all 3 scenarios
+    (`s1_fixed_sign` M3-α, `s2_fds_swarm` M4-mini, `s3_fno_swarm` M5-mini)
+  - Skeleton: `drone_swarm.py` (Crazyflie + Boids/APF: M4-full), full STL→URDF
+    in `urdf_builder.build_building_urdf` (trimesh 미설치: M1-full)
+- **EXP-PATH-001 mini-sweep 완료** —
+  `results/exp_path_001/comparison.csv` (27 rows = 3 fires × 3 seeds × 3 scenarios,
+  5 agents each, placeholder building) + `figures/exp_path_001/comparison.png`
+  - S1 fixed-sign: evac 80.0% (σ=0), exposure 0s, t_evac 4.5s
+  - S2 FDS swarm:  evac 93.3% (σ=0.1), exposure 0.36s (max 2.8s), t_evac 17.4s
+  - S3 model swarm (Tier1RiskMap): **identical to S2 in 9/9 rows** — H5
+    transitive 1차 확인
+  - H6 trade-off 시각화됨: drone swarm 이 +13.3 %p 더 구조하지만 +12.9 s
+    더 길고 +0.36 s exposure 증가 (small placeholder building, FED 미활성)
 
-**Hypothesis state (2026-05-13)**:
+**Hypothesis state (2026-05-14)**:
 - H1 ✅ — 52,000× speedup (GNN ~26 ms vs FDS ~23 min)
 - H2 ✅ — ConvLSTM RelL2 0.136 (FNO PI 0.157 marginal)
 - H3 ⚠ partial — full SLCF에서 FNO < ConvLSTM, sparse 39 sensor regime
   에서 FNO no-PI + geodesic 이 ConvLSTM 우위
 - H4 ✅ — Tier 1 GNN FNR 4.6%
-- H5 ✅ — Tier 1 GNN IoU 0.904 (13/13 OOD)
-- H6 🔜 — path planning + EXP-PATH-001 미완
+- H5 ✅ — Tier 1 GNN IoU 0.904 (13/13 OOD); EXP-PATH-001 mini-sweep 에서
+  path-level transitive 1차 확인 (S3 ≡ S2 in 9/9 rows)
+- H6 ⚠ partial — pipeline 가동 (27-row comparison.csv 산출), success-rate /
+  exposure 측면 trade-off 정량화. **primary metric (FED ≥ 30% 감소) 은
+  M2-full + M3-full 의존**: PersonAgent CO-FED accumulator + raw CO grid load
 
 **Plan B activated** (paper reframing):
 > 단일 39-detector 인프라 위에서 binary signal + 12K-param GNN 이
@@ -547,20 +571,42 @@ figures/           — paper/slide figures
 
 **Recent decisions**:
 - D-022: H6 metrics = peak_danger / time_in_hazard / aset_margin / fed_final
+  (per-trajectory diagnostic; EXP-PATH-001 헤드라인은 D-025 의 5-metric)
 - D-023: 30 → 33 scenarios, 4 → 3 HRR levels (500/1000/1500 kW)
 - D-024: all 33 → train; val/ood Member A 의 T01–T05 13건으로 충당
 - D-024 v3.3: floorplan-based 39 sensors (22 rooms + 14 corridors + 3 exits)
   *— 두 D-024 항목 번호 충돌 정리 필요*
+- **D-025 (2026-05-14): H6 재정의 + drone swarm 도입 (D-013 반전)** —
+  EXP-PATH-001 을 3 PyBullet 시나리오 비교 (S1 fixed-sign / S2 FDS swarm /
+  S3 model swarm) 로 전환, 5-metric (evac_success_rate / mean_evac_time /
+  danger_zone_exposure / casualty_rate / cumulative_FED)
+
+**Recent lessons** (`docs/lessons_learned.md`):
+- L-014: conda-forge pybullet 설치가 pip numpy 를 깨뜨림 — 결정적 복구 절차
+  (pybullet=3.25=py311hbc92ba2_3 build 명시 + `pip install --force-reinstall
+  --no-deps numpy==1.26.4`)
+- L-015: PyBullet `getContactPoints` 가 mass=0 body 끼리 비어 있음 →
+  `getClosestPoints(distance=0.0)` 사용 (kinematic agent + 정적 obstacle)
 
 **Next priority** (`docs/90_next_steps.md`):
-1. ★★★ Tier1RiskMap adapter + path planning 완성 + EXP-PATH-001 (H6 검증)
-2. ★★ Tier 1 GNN inference time 정확 측정 (H1 수치 확정)
-3. ★ PyBullet Week 12 통합 (spec 완료, 외주)
-4. ★ Paper draft + 발표 슬라이드
+1. ★★★ **M2-full + M3-full (FED 활성화)** — PersonAgent 의 status machine
+   (alive→dead) + CO-FED accumulator + 시나리오 runner 의 raw CO grid 로드.
+   완료 시 EXP-PATH-001 의 H6 primary metric 측정 가능.
+2. ★★ **A2 (trimesh + 실 STL → URDF)** — `assets/science_hall_lv5.stl`
+   (48 KB, on disk) → URDF. 실 building 으로 전환 → 20-person 확장 가능 +
+   placeholder 의 partition 비현실성 제거.
+3. ★ M4-full Crazyflie URDF + drone-swarm 실제 비행 (현재는 guidance
+   로직만 동작; 시각화·외주 spec 갱신과 함께)
+4. ★ Tier 1 GNN inference time 정확 측정 (H1 수치 확정)
+5. ★ M5-full 실제 FNORiskMap (현재 S3 는 Tier1RiskMap 으로 substitute)
+6. ★ Paper draft + 발표 슬라이드 (`figures/exp_path_001/comparison.png` 가
+   Figure 4.4 first draft)
 
 **Active blockers**:
-- Path planning 모듈 미완성 + Tier1RiskMap adapter 부재 → H6 검증 차단
-- (이전 val/ood blocker 해소됨 — Member A T01–T05 13 시나리오 도착)
+- **PyBullet 본 실험 FED metric 미활성** — H6 primary metric 측정 불가.
+  M2-full (PersonAgent CO-FED 누적기) + M3-full (CO grid load) 가 prerequisite.
+- (이전: path planning + Tier1RiskMap → 해소)
+- (이전: val/ood → Member A T01–T05 도착 후 해소)
 
 ---
 
