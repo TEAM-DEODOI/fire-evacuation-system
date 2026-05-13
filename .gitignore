@@ -132,6 +132,14 @@ checkpoints/**/final.pt
 !checkpoints/tier1_gnn_v3/best.pt
 !checkpoints/conv_lstm_sparse_v3/best.pt
 !checkpoints/fno_sparse_v3/best.pt
+!checkpoints/ensemble_decoder/best.pt
+!checkpoints/ensemble_decoder_fn10/best.pt
+!checkpoints/ensemble_decoder_fn25/best.pt
+!checkpoints/ensemble_decoder_fn40/best.pt
+
+# Decoder training-data cache — 15 MB, regenerate via
+#   python scripts/precompute_decoder_data.py
+results/decoder_data/
 
 # ─────────────────────────────────────────────────────────────────────────
 # Weights & Biases run logs (offline runs, debug logs)

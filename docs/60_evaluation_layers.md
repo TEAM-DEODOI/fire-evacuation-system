@@ -40,6 +40,9 @@
 | L4g (3-way min FNR, Euclidean) | w=(0.6, 0.10, 0.30) | GNN + ConvLSTM + FNO | 0.597 (FNR **4.7%** ✅ H4) |
 | **L4g ★★ (3-way min FNR, Geodesic — safety)** | **w=(0.6, 0.10, 0.30)** | GNN + ConvLSTM + FNO | 0.590 (FNR **3.7%** ★ ✅ H4) |
 | **L4f** ★ | **Tier 1 GNN binary (39 nodes)** | D-023 trigger | **SimpleFireGNN** | **0.90** ★★ |
+| **L4h ★★★ (Learned Decoder, fn=2.5 paper default)** | **Per-cell MLP, 1.4K params** | 3 models + mask + pos + time | **PerCellEnsembleDecoder** | **0.733** (FNR 11.5%, **9/13 H5**, **8/13 H4**) |
+| L4h (Learned Decoder, fn=4.0 safety) | Per-cell MLP, 1.4K params | same as above | PerCellEnsembleDecoder | 0.718 (FNR **10.0%**, 8/13 H5, 8/13 H4) |
+| L4h (Learned Decoder, fn=1.0 BCE) | Per-cell MLP, 1.4K params | same as above | PerCellEnsembleDecoder | 0.727 (FNR 14.9%, 9/13 H5) |
 
 ---
 

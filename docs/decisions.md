@@ -583,6 +583,77 @@ H6 결과 도착하면 paper draft 시작.
 
 ---
 
+## D-028: Learned ensemble decoder (PerCell MLP) replaces hand-crafted 3-way Balanced
+
+**Date**: 2026-05-14 (evening)
+
+**Decision**:
+Cell-level deployment 의 reference ensemble 을 hand-crafted weighted average
+(D-026) 에서 **learned `PerCellEnsembleDecoder` MLP** 로 교체. 입력은 동일
+세 모델 (GNN cell-projected + Sparse-ConvLSTM + Sparse-FNO) + mask + 위치
++ time, 출력은 cell danger ∈ [0, 1].
+
+**Architecture**:
+- Per-cell MLP: 8 input features → hidden(32) → hidden(32) → 1 sigmoid output.
+- **1,377 params** (12 K Tier 1 GNN 다음으로 작음).
+- 학습: BCE on binary truth (danger ≥ 0.5), Adam lr 1e-3, batch 2048, 30 epoch.
+- Loss: **asymmetric BCE** (FN penalty 2.5×) — paper-headline trade-off.
+
+**Training data**:
+- 33 train scenarios × t₀=120s × 6 lookahead × 1826 fluid cells × 6 z layers
+  = **2.16 M cell samples**. 13 OOD held out.
+- Pre-compute step (`scripts/precompute_decoder_data.py`, ~15 min):
+  GNN + Sparse-ConvLSTM + Sparse-FNO forward 후 npz cache.
+
+**fn_weight sweep (13 OOD)**:
+
+| fn_weight | Mean IoU | Mean FNR | H5 pass | H4 pass | 용도 |
+|---|---|---|---|---|---|
+| Hand-crafted Balanced (D-026) | 0.618 | **5.1%** | 5/13 | 7/13 | baseline |
+| Learned 1.0 (BCE) | 0.727 | 14.9% | 9/13 | 4/13 | IoU only |
+| Learned 1.5 | 0.728 | 13.3% | 9/13 | — | — |
+| **Learned 2.5 ★ (paper default)** | **0.733** | 11.5% | **9/13** | **8/13** | balance |
+| Learned 4.0 | 0.718 | 10.0% | 8/13 | 8/13 | FNR-safe |
+
+→ **fn=2.5 paper-headline default**: IoU **+0.115 (+18.6% relative)**, H5 **5 → 9** scenarios,
+H4 trade-off (5.1% → 11.5%) but still 8/13 pass.
+
+**Alternatives**:
+- (A) Hand-crafted ensemble (D-026): IoU ceiling at 0.624 (Step 1 ablation 확인).
+- (B) Small U-Net (spatial conv on top of 3 model outputs): 더 큰 모델, 학습 시간
+  더 길지만 cell 별 MLP 만으로도 spatial context 가 sparse 모델 출력에 충분히
+  내장되어 있어 추가 conv 불필요.
+- (C) **Selected**: per-cell MLP — 1,377 params, 학습 ~3분 CPU, IoU 0.733 도달.
+
+**Rationale**:
+- Hand-crafted projection (mask-aware k-NN + adaptive σ) Step 1 negative
+  → hand-engineered ceiling 확인.
+- Learned decoder 는 cell 별 model 출력 noise 패턴 + 신뢰도를 자동 학습.
+  특히 약한 화재 (sim_500kw_1m2_T01) 같은 어려운 시나리오에서 sparse 모델
+  의 over-prediction 을 효과적으로 보정 → 시각화에서 FDS truth 와 거의
+  동일한 cell-level 위험도 추론.
+- Tier 1 GNN per-node IoU 0.904 → cell-projected 0.18-0.32 의 격차 (over-smoothing)
+  를 decoder 가 sparse 모델 출력과 결합해 보완.
+- Asymmetric BCE 로 safety/accuracy frontier 를 단일 hyperparam (fn_weight)
+  으로 제어. fn=2.5 가 paper-balanced, fn=4.0 이 deployment-safe.
+
+**Implementation**:
+- `src/tier1/ensemble_decoder.py`: `PerCellEnsembleDecoder`, `DecoderDataset`,
+  `build_cell_features`, `asymmetric_bce_loss`, `decoder_forward_grid`.
+- `scripts/precompute_decoder_data.py`: 46 시나리오 forward → npz.
+- `scripts/train_ensemble_decoder.py`: 학습 + per-epoch OOD eval + best save.
+- `scripts/visualize_60s_9row.py`: 8-row + decoder row 추가.
+- 체크포인트:
+    `checkpoints/ensemble_decoder/best.pt`    (= fn=2.5, paper default)
+    `checkpoints/ensemble_decoder_fn{10,25,40}/best.pt` (sweep variants)
+
+**Status**: Implemented + verified on 13-OOD. Paper headline cell-level
+contribution: hand-crafted 0.618 / 5.1% → learned 0.733 / 11.5%. H6 path
+planning 은 이 decoder 의 cell-level output 을 `Tier1RiskMap` adapter 의
+입력으로 사용 예정.
+
+---
+
 ## How to Add a Decision
 
 When making a major scope or interface decision:

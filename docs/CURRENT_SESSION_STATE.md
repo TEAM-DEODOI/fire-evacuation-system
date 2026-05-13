@@ -3,8 +3,8 @@
 > **이 파일을 새 Claude 세션에서 가장 먼저 읽으세요.**
 > Compact 직전 / 직후 무엇을 했고 어디서 멈췄는지 정확히 기록.
 >
-> **Last updated**: 2026-05-14 (session end before compact)
-> **Latest commit**: `7-way ensemble + geodesic projection`
+> **Last updated**: 2026-05-14 (evening — learned decoder breakthrough)
+> **Latest commit**: `Learned ensemble decoder (Option 2) → IoU 0.733 / FNR 11.5% / H5 9-13, +0.115 over hand-crafted`
 
 ---
 
@@ -71,6 +71,8 @@
 | **L4g 3-way Euclidean balanced** | GNN+Conv+FNO (0.5/0.25/0.25) | **0.621** | 6.4% | **5/13** ✅H4 |
 | **L4g 3-way Geodesic balanced** ★ | GNN+Conv+FNO (0.5/0.25/0.25) | **0.618** | **5.1%** | **5/13** ✅H4 |
 | **L4g 3-way Geodesic Min-FNR** ★★ | GNN+Conv+FNO (0.6/0.1/0.3) | 0.590 | **3.7%** | 4/13 ✅H4 |
+| **L4h Learned Decoder fn=2.5 ★★★ (paper default)** | PerCell MLP 1.4K params | **0.733** | 11.5% | **9/13 H5, 8/13 H4** |
+| L4h Learned Decoder fn=4.0 (safety) | PerCell MLP 1.4K params | 0.718 | **10.0%** | 8/13 H5, 8/13 H4 |
 | **L4f Tier 1 GNN binary (per-node)** | SimpleFireGNN | **0.904** | 4.6% | **✅/✅** |
 
 ### 2.2 핵심 인사이트

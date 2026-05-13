@@ -42,6 +42,9 @@
 | L4g 3-way Ensemble max IoU (Geodesic) | GNN + ConvLSTM + FNO (0.4/0.6/0.0) | 0.624 | 14.1% | — | (4/13 ✅) | ❌ |
 | **L4g 3-way Min FNR (Geodesic) ★★** | **GNN + ConvLSTM + FNO (0.6/0.1/0.3)** | 0.590 | **3.7%** ★ ✅ | — | (4/13 ✅) | **✅ H4** |
 | **L4f Tier 1 GNN binary** | **SimpleFireGNN** | **0.904** ★ | **4.6%** | — | **✅** | **✅** |
+| **L4h Learned Decoder fn=1.0** | PerCell MLP 1.4K params | 0.727 | 14.9% | — | (9/13 ✅) | ❌ |
+| **L4h Learned Decoder fn=2.5 ★★★** | **PerCell MLP 1.4K params** | **0.733** | 11.5% | — | **(9/13 ✅)** | (8/13 ✅) |
+| **L4h Learned Decoder fn=4.0** | PerCell MLP 1.4K params | 0.718 | **10.0%** | — | (8/13 ✅) | (8/13 ✅) |
 
 ---
 
