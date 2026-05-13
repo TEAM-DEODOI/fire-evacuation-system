@@ -55,8 +55,14 @@ def precompute_node_to_cell_weights(
     k: int = 3,
     p: float = 2.0,
     sigma: float = 5.0,
+    mask: np.ndarray = None,
+    use_geodesic: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """각 cell 에서 k-nearest node 의 IDW weight 계산.
+
+    Args:
+        use_geodesic: True 면 BFS geodesic distance (벽 우회), False 면 Euclidean.
+        mask: (X, Y, Z) fluid/solid mask — geodesic 사용 시 필수.
 
     Returns:
         knn_idx: (X, Y, Z, k) — k-nearest node 인덱스
@@ -64,23 +70,49 @@ def precompute_node_to_cell_weights(
     """
     x_c, y_c, z_c = cell_centres()
     nx, ny, nz = GRID_SHAPE
-    node_xyz = np.array(node_positions)  # (N, 3)
+    node_xyz = np.array(node_positions)
     N = len(node_xyz)
+
+    if use_geodesic:
+        # Use scripts/evaluate_sparse_sensing_geodesic.py logic
+        from evaluate_sparse_sensing_geodesic import (
+            precompute_geodesic_distances, bfs_geodesic_distance,
+        )
+        # cell-size in m: 0.5
+        # geodesic from each node → (N, X, Y) at z_breathing (z_idx=3)
+        node_xy = [(p[0], p[1]) for p in node_positions]
+        z_idx_breathing = 3
+        geo_dist_2d = precompute_geodesic_distances(mask, node_xy, z_idx_breathing)
+        # (N, nx, ny) in cell steps; convert to m
+        geo_dist_2d_m = geo_dist_2d * 0.5
+        # Broadcast over z (use same 2D distance for all z layers)
+        # shape: (N, nx, ny, nz) — same value across z
+        geo_dist = np.broadcast_to(
+            geo_dist_2d_m[:, :, :, None], (N, nx, ny, nz)
+        ).copy()
+    else:
+        # Euclidean
+        cell_centres_grid = np.zeros((nx, ny, nz, 3), dtype=np.float32)
+        cell_centres_grid[..., 0] = x_c[:, None, None]
+        cell_centres_grid[..., 1] = y_c[None, :, None]
+        cell_centres_grid[..., 2] = z_c[None, None, :]
+        # (N, nx, ny, nz)
+        diff = node_xyz[:, None, None, None, :] - cell_centres_grid[None, ...]
+        geo_dist = np.sqrt(np.sum(diff ** 2, axis=-1))
 
     knn_idx = np.zeros((nx, ny, nz, k), dtype=np.int32)
     knn_w = np.zeros((nx, ny, nz, k), dtype=np.float32)
-
     for ix in range(nx):
         for iy in range(ny):
             for iz in range(nz):
-                cell_xyz = np.array([x_c[ix], y_c[iy], z_c[iz]])
-                # Euclidean dist to all nodes
-                d = np.sqrt(np.sum((node_xyz - cell_xyz) ** 2, axis=1))
-                top_k = np.argsort(d)[:k]
+                d = geo_dist[:, ix, iy, iz]
+                # Replace inf (unreachable) with large value
+                d_safe = np.where(np.isfinite(d), d, 1e6)
+                top_k = np.argsort(d_safe)[:k]
                 knn_idx[ix, iy, iz] = top_k
-                # IDW weights with Gaussian
-                w = np.exp(-d[top_k] ** 2 / (2 * sigma ** 2))
-                w = w / (w.sum() + 1e-9)
+                w = np.exp(-d_safe[top_k] ** 2 / (2 * sigma ** 2))
+                w_sum = w.sum()
+                w = w / (w_sum + 1e-9) if w_sum > 1e-9 else np.ones(k) / k
                 knn_w[ix, iy, iz] = w
     return knn_idx, knn_w
 
@@ -237,6 +269,8 @@ def main() -> int:
     parser.add_argument("--knn-k", type=int, default=3)
     parser.add_argument("--knn-sigma", type=float, default=5.0)
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--geodesic-projection", action="store_true",
+                        help="Use BFS geodesic distance (wall-aware) instead of Euclidean for cell-projection")
     args = parser.parse_args()
 
     args.out_figures.mkdir(parents=True, exist_ok=True)
@@ -269,10 +303,12 @@ def main() -> int:
     sparse_ind = make_sparse_indicator(sensor_idxs, broadcast_z=True)
 
     # Precompute cell ← node mapping (한 번만)
-    print(f"[setup] precomputing k-NN cell-to-node weights (k={args.knn_k})...")
+    proj_name = "geodesic" if args.geodesic_projection else "Euclidean"
+    print(f"[setup] precomputing {proj_name} k-NN cell-to-node weights (k={args.knn_k})...")
     node_positions = [d.position for d in ALL_DETECTORS]
     knn_idx, knn_w = precompute_node_to_cell_weights(
         node_positions, k=args.knn_k, sigma=args.knn_sigma,
+        mask=mask, use_geodesic=args.geodesic_projection,
     )
     print(f"        knn_idx {knn_idx.shape}, knn_w {knn_w.shape}")
 

@@ -86,6 +86,7 @@ def main() -> int:
                         default=Path("results/exp_ensemble_3way/comparison.csv"))
     parser.add_argument("--t0", type=float, default=120.0)
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--geodesic-projection", action="store_true")
     args = parser.parse_args()
 
     args.out_figures.mkdir(parents=True, exist_ok=True)
@@ -113,10 +114,12 @@ def main() -> int:
     sensor_idxs = load_sensor_indices(args.building)
     sparse_ind = make_sparse_indicator(sensor_idxs, broadcast_z=True)
 
-    print(f"[setup] precomputing cell-node IDW weights...")
+    proj_name = "geodesic" if args.geodesic_projection else "Euclidean"
+    print(f"[setup] precomputing {proj_name} cell-node IDW weights...")
     node_positions = [d.position for d in ALL_DETECTORS]
     knn_idx, knn_w = precompute_node_to_cell_weights(
         node_positions, k=3, sigma=5.0,
+        mask=mask, use_geodesic=args.geodesic_projection,
     )
 
     # Weight grid: w_t1 + w_conv + w_fno = 1
