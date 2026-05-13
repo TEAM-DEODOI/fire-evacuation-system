@@ -401,41 +401,61 @@ class DynamicPredictivePlanner(EvacuationPlanner):
         ...
 ```
 
-### Building graph structure
+### Building graph structure (D-026, 2026-05-14)
 
-NetworkX undirected graph with:
+NetworkX undirected graph derived from the canonical fluid mask
+(`data/processed/dataset.h5::mask`, shape `(60, 40, 6)` boolean).
+Node = one fluid SLCF cell, edges 8-connected at the breathing-zone
+z-slice (k=3, z = 1.75 m). The previous 16-20-node abstract graph
+from `shared/building.py` is **deprecated for path planning** (kept
+only as the source of canonical exit positions).
 
-**Nodes** (16–20 total):
+**Node IDs**: `(i, j, k)` cell-index tuples, ``0 ≤ i < 60``,
+``0 ≤ j < 40``, ``k = 3`` (single navigation layer).
+
+**Node attributes**:
 ```python
 node_attrs = {
-    'pos': (x: float, y: float, z: float),  # metres
-    'type': Literal['room', 'corridor', 'intersection', 'exit'],
-    'is_exit': bool,
+    'pos':      (x: float, y: float, z: float),  # cell centre, metres
+    'cell_idx': (i: int, j: int, k: int),         # same as the node ID
+    'is_exit':  bool,                              # one of the 3 exits
 }
 ```
 
-**Edges**:
+**Edge attributes** (8-connected, corner-cutting through solid forbidden):
 ```python
 edge_attrs = {
-    'length': float,   # m
-    'width': float,    # m, for bottleneck modeling
-    'base_time': float,  # length / 1.5 (walking speed in m/s)
+    'length':   float,   # 0.5 m (cardinal) or 0.5*sqrt(2) m (diagonal)
+    'weight':   float,   # populated by compute_edge_weights at plan time
+    'edge_risk': float,  # mean of endpoint risks at the chosen t
+    'passable': bool,    # edge_risk <= risk_threshold
 }
 ```
 
-### Edge weight computation
+Typical built graph (current STL `assets/science_hall_lv5.stl`):
+
+* ~1800 fluid nodes
+* ~5700 edges
+* 8 connected components (real buildings have isolated rooms);
+  the largest (~1300 nodes) contains all 3 exits.
+
+Spawn / waypoint logic restricts candidates to the largest
+exit-bearing component so every agent is guaranteed at least one
+viable A* path to an exit.
+
+### Edge weight computation (D-026)
 
 ```python
-def compute_edge_weight(graph, edge, risk_map, t,
-                       alpha=1.0, beta=50.0,
-                       n_samples=5) -> float:
-    """Edge weight = alpha * base_time + beta * integrated_risk
+def compute_edge_weights(graph, risk_map, t, config):
+    """Cell-discrete cost: weight(u → v) = base_cost · length
+    + risk_scale · mean(risk_u, risk_v).
 
-    Risk is integrated by sampling n_samples points along the edge,
-    querying risk_map at each, and taking the mean.
+    Each fluid cell's risk is queried ONCE via risk_map.query(cell.pos, t).
+    The previous N-sample line integration along an edge is unnecessary
+    at 0.5 m cell granularity -- midpoint sampling adds no information.
 
-    For dynamic planner with lookahead, query at multiple times and
-    take max (the worst risk during the planning horizon).
+    Edges with mean risk above ``risk_threshold`` are flagged
+    ``passable=False``; remove_impassable_edges() then deletes them.
     """
 ```
 

@@ -473,6 +473,75 @@ fidelity 가 path quality 로 transitive 하게 연결되는지 동시에 측정
 
 ---
 
+## D-026: Path-planning graph = fluid-cell grid (60×40×6) — building.py 19-node 폐기
+
+**Date**: 2026-05-14
+**Decision**: A* 가중치 path planning 의 graph 를 `shared/building.py` 의
+hardcoded 19-node abstract graph 에서 **fluid mask 기반 cell-level grid**
+로 교체. 한 노드 = 한 SLCF cell (0.5 m × 0.5 m × 0.5 m). 노드 ID =
+`(i, j, k)` 튜플. 노드 attribute `pos` = world cell centre. Edge =
+8-connected at z=k₃ (호흡 높이, 대각선 corner-cutting 금지). Edge weight
+= `base_cost · length + risk_scale · mean(risk_u, risk_v)`. Mask 는
+`data/processed/dataset.h5::mask` 에서 로드 (75.7% fluid).
+
+**Alternatives**:
+- 19-node 그래프 좌표를 실 STL 에 맞춰 재정의 (~2시간)
+- 다른 STL 을 받아 graph 와 매칭
+- placeholder URDF 로 회귀
+
+**Rationale**:
+
+진단으로 발견: `shared/building.py` 의 19-node graph 좌표는 "Day 2 prompt"
+의 *idealized* L-shape building 가정으로 만든 abstract spec. 실 STL
+`assets/science_hall_lv5.stl` (PyroSim 에서 Member A 가 export) 는 다른
+실내 layout 을 가져, 17/19 graph nodes 가 STL 의 벽 영역에 위치, 21/22
+edges 가 벽을 가로지름. 결과: EXP-PATH-001 sweep 에서 대부분 0% evac.
+
+근본 해결책 = graph 를 *실 데이터 grid* 와 정합:
+1. Risk map 이 이미 (60, 40, 6) grid. Cell ID 가 risk array index 와 1:1
+   매핑 → planner edge weight 가 보간 없이 직접 계산.
+2. Fluid mask 가 `data_pipeline/mask_generator.py` 에 의해 FDS slice 로
+   부터 자동 추출되어 있어 STL 의 *물리적* fluid 영역과 정확히 일치.
+3. Random spawn = fluid cell 에서 uniform sample → 사용자가 의도한
+   "건물 랜덤 위치" 의도 정확 실현.
+4. PersonAgent.step_toward 가 PyBullet `getClosestPoints` 의 mass-0
+   quirks (L-015) + STL floor/ceiling 인공 overlap 에 의존하지 않고
+   mask cell check 로 navigability 판정 → 시뮬 신뢰성 ↑.
+
+**Impact**:
+
+- `D-016` (3 exits in maze layout, asymmetric placement): **유지**.
+  exits 의 *논리적 위치* 는 그대로, *graph 내 표현* 만 cell 로 바뀜.
+- `shared/building.py` 19-node graph: **path planning 에서 deprecate**.
+  exit 좌표 source 로만 사용. 향후 시각화·zone label 등에 잔존.
+- `interface_contracts.md §5` ("Building graph: 16-20 nodes total"):
+  **갱신 필요**. 16-20 nodes 가 아니라 ~1800 fluid cells (전체 fluid
+  영역의 connected component 크기에 따라 가변).
+- `tests/test_path_planning.py`: cell-tuple ID 가정으로 재작성 필요.
+- 다운스트림 (Tier1 GNN, FDS data, risk map, evaluation) 영향 **0** —
+  모두 별도 grid 시스템 사용.
+
+**Side effects on EXP-PATH-001**:
+
+같은 sweep (3 fires × 3 seeds × 5 agents) 결과가 즉시 변화:
+
+| metric | 19-node graph (이전) | cell grid (D-026) |
+|---|---|---|
+| S1 mean evac | 0.0 % | 60.0 % |
+| S2 mean evac | 6.7 % | **100.0 %** |
+| S3 mean evac | 6.7 % | **100.0 %** |
+| S2 mean exposure | 72.2 s | **0.8 s** |
+| S2 vs S1 evac | +6.7 %p | **+40.0 %p** ★ |
+| S2 vs S1 exposure | 0 s | **−13.7 s** ★ |
+| H5 transitive (S3≡S2) | 9/9 | 4/9 (모델/truth 가 일부 path 에서 미세 분기) |
+
+**Status**: Implemented 2026-05-14. EXP-PATH-001 mini-sweep refresh
+(`results/exp_path_001/comparison.csv`, `figures/exp_path_001/comparison.png`)
+로 새 baseline 확정. 다음 단계: M2-full + M3-full 의 FED 활성화 (H6
+primary metric).
+
+---
+
 ## How to Add a Decision
 
 When making a major scope or interface decision:
