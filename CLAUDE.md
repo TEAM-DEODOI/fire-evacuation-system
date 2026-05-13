@@ -500,40 +500,67 @@ figures/           — paper/slide figures
 
 ---
 
-## Current Project State (2026-05-12)
+## Current Project State (2026-05-13)
 
-> **Detailed handoff**: `docs/handoff_2026_05_12.md` — read first when
-> resuming. Holds full decision log, evaluation numbers, file index, and
-> the priority queue.
+> **Resume here**: `docs/README.md` (index) → `docs/00_project_overview.md`
+> → `docs/70_results_summary.md` (모든 결과) → `docs/90_next_steps.md`
+> (다음 작업). 과거 handoff (`docs/archive/old_planning/handoff_2026_05_12.md`)
+> 는 archive 로 이동.
 
 **Completed**:
 - Tier 0/1/2 (foundation, simulation tools, data extraction) — all ✅
-- Data pipeline: 33-scenario `data/processed/dataset.h5` (D-024 all-train,
-  990 train pairs, val/ood empty pending Member A's extra sims)
+- Data pipeline: 33+13-scenario dataset (33 train + 13 OOD from Member A's
+  T01–T05 sims — val/ood blocker 해소)
 - Risk Map module (tenability / FED / ASET / StaticRiskMap / converter /
   path_metrics) with D-022 4-metric H6 evaluation
-- ConvLSTM baseline trained: 100 epoch, train loss 0.001, **risk-map IoU
-  0.85 / FNR 9.9% (✅ H4/H5)**, inference 1664× faster than FDS (✅ H1)
-- PI-FNO code complete and ready to launch (no PI + full PI curriculum)
-- wandb integration on both training entry points
-- Risk-map comparison artefacts (FDS vs ConvLSTM) generated at
-  `figures/risk_compare/scenario_{014,011}/`
+- **ConvLSTM 학습 + 평가 완료**: RelL2 0.136 / IoU 0.887 / FNR 6.0% on 13 OOD
+- **FNO no-PI + FNO full-PI 학습 완료 (RunPod A100)** — `checkpoints/fno_{no_pi,pi}/best.pt`
+- **EXP-FIRE-001 3-model OOD 비교 완료** (`results/exp_fire_001/comparison.csv`)
+  - ConvLSTM 0.136 / FNO no-PI 0.138 / FNO PI 0.157 (RelL2)
+- **D-024 v3.3 — 39 sensor 인프라**: 22 rooms + 14 corridors + 3 exits
+- **D-023 trigger model**: T>60°C OR V<10m, 46 시나리오 `binary_sequence` 생성
+- **Tier 1 GNN (SimpleFireGNN, 12K params) 학습 + 평가**
+  - **IoU 0.904 / FNR 4.6% on 13 OOD (13/13 H5 통과, 11/13 H4 통과)** ★
+  - Tier 2 best (FNO no-PI + geodesic) 대비 IoU 2.1× / 150× smaller
+- **L1–L4 evaluation layer framework** + mask-aware geodesic IDW interpolation
+- **Sparse-input ConvLSTM (L4e)**: IoU 0.182 conservative bias →
+  re-sparsify fix → IoU 0.581
+- Documentation 재구성 — numbered `00_*`~`90_*` + `docs/archive/`
+- PyBullet integration spec (`docs/pybullet_integration_spec.md`) — 외주 전달용
+- **Path planning 모듈 (`src/path_planning/`) — 미완성**
+  (`building_graph.py` / `edge_weights.py` / `planners.py` / `evacuation_sim.py`
+  파일은 존재하나 통합·검증 미완)
+
+**Hypothesis state (2026-05-13)**:
+- H1 ✅ — 52,000× speedup (GNN ~26 ms vs FDS ~23 min)
+- H2 ✅ — ConvLSTM RelL2 0.136 (FNO PI 0.157 marginal)
+- H3 ⚠ partial — full SLCF에서 FNO < ConvLSTM, sparse 39 sensor regime
+  에서 FNO no-PI + geodesic 이 ConvLSTM 우위
+- H4 ✅ — Tier 1 GNN FNR 4.6%
+- H5 ✅ — Tier 1 GNN IoU 0.904 (13/13 OOD)
+- H6 🔜 — path planning + EXP-PATH-001 미완
+
+**Plan B activated** (paper reframing):
+> 단일 39-detector 인프라 위에서 binary signal + 12K-param GNN 이
+> continuous signal + 1.78M-param 모델을 2.1× 능가. Phase-transition
+> 도메인에서는 inductive bias matching 이 capacity 보다 dominant.
 
 **Recent decisions**:
 - D-022: H6 metrics = peak_danger / time_in_hazard / aset_margin / fed_final
 - D-023: 30 → 33 scenarios, 4 → 3 HRR levels (500/1000/1500 kW)
-- D-024: all 33 → train; val/ood reserved for separate simulations
+- D-024: all 33 → train; val/ood Member A 의 T01–T05 13건으로 충당
+- D-024 v3.3: floorplan-based 39 sensors (22 rooms + 14 corridors + 3 exits)
+  *— 두 D-024 항목 번호 충돌 정리 필요*
 
-**Next priority**:
-1. ★★★ FNO no-PI + full-PI training on RunPod A100 (~30 min, ~$0.40)
-2. ★★ Path planning (Week 11) — edge_weights / planners / evacuation_sim
-3. ★ val/ood simulations from Member A (1500kW H, 2000kW, new locs)
+**Next priority** (`docs/90_next_steps.md`):
+1. ★★★ Tier1RiskMap adapter + path planning 완성 + EXP-PATH-001 (H6 검증)
+2. ★★ Tier 1 GNN inference time 정확 측정 (H1 수치 확정)
+3. ★ PyBullet Week 12 통합 (spec 완료, 외주)
+4. ★ Paper draft + 발표 슬라이드
 
 **Active blockers**:
-- `val`/`ood` simulations absent → H3 (FNO > ConvLSTM on OOD) cannot be
-  measured. All other hypotheses (H1, H4, H5, H6-premise) already on track.
-- GPU access — CPU works but 2 hrs/model. RunPod migration plan
-  documented in handoff §7.
+- Path planning 모듈 미완성 + Tier1RiskMap adapter 부재 → H6 검증 차단
+- (이전 val/ood blocker 해소됨 — Member A T01–T05 13 시나리오 도착)
 
 ---
 
