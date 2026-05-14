@@ -237,13 +237,103 @@ PI loss components (curriculum learning, weight ramp):
 5-row grid (FDS truth + ConvLSTM + FNO no-PI + FNO PI + **L4e Sparse ConvLSTM**)
 × 6 col (t₀+10s ~ +60s).
 
-**관찰**:
+**관찰** (re-sparsify 적용 후):
 - Row 1-4 (full-input 모델들): truth 와 시각적으로 유사
-- **Row 5 (L4e Sparse)**: t₀+10s 에서는 일부만 위험 → **시간 지나며 도메인 전체 빨강 saturate**
-- 약한 화재 (T01 500kW) 일수록 conservative bias 가 더 극단적
+- Row 5 (L4e Sparse ConvLSTM): truth 와 유사하게 회복 (L-013 fix 효과)
 
-→ "위험 영역 식별" 보다 "위험 영역 누락 안 함" 우선시 하는 학습 결과.
 생성 스크립트: `scripts/visualize_60s_5model.py`
+
+### 6.5b 6-row 통합 비교 (Sparse FNO 6-channel 추가)
+
+`figures/current/05_future_prediction/<scenario>_grid_6model_t0_120.png` (3개):
+6-row grid — 5-row + **L4e' Sparse FNO (6-channel)** 행 추가.
+
+**관찰**:
+- Row 6 (Sparse FNO 6-ch): building 구조 sharp 하게 보존, 시간 지나도 stable
+- T05 1500kW 2m²: corridor 패턴 매우 정확 (4 시나리오 H5 통과)
+- T01 500kW 1m²: fire spread 위치 잡지만 noisy
+
+생성 스크립트: `scripts/visualize_60s_6model.py`
+
+## 7. Sparse FNO (L4e') — 6-channel input + FNO architecture
+
+**구현**: `scripts/train_sparse_fno.py` + `scripts/evaluate_sparse_fno.py`
+
+### 7.1 두 가지 변경 통합
+
+| 변경 | 목적 |
+|---|---|
+| **Input 5→6 채널**: sensor_indicator 추가 | 모델이 "어디가 measurement vs derived" 명시적으로 학습 |
+| **Architecture: ConvLSTM → FNO** | Fourier basis 가 dense smooth pattern 과 호환 (L4d 입증) |
+
+### 7.2 학습 (100 epoch, cold-start)
+
+**체크포인트**: `checkpoints/fno_sparse_v3/best.pt` (14 MB, 1.79M params)
+- Train MSE: 0.0348 → **0.00510** (수렴, 50 epoch 시점부터 plateau)
+- 학습 시간: ~3시간 (RunPod 또는 사용자 환경)
+
+### 7.3 OOD 평가 결과 (13 시나리오, t₀=120s, re-sparsify chaining)
+
+| 메트릭 | Mean | vs L4e Sparse ConvLSTM |
+|---|---|---|
+| **IoU @ +60s** | **0.525** | -0.06 (살짝 낮음) |
+| **FNR @ +60s** | **10.4%** ★ | -12.6%p (절반 이하) |
+| RMSE step 6 | 0.156 | +0.04 |
+| **H5 통과 시나리오** | **4/13** | (ConvLSTM 0/13) |
+
+→ **4 시나리오에서 H5 (0.70) 통과**: 1000kw_2m2_T01/T05, 1500kw_2m2_T05, 500kw_2m2_T05
+→ 강한 화재 + 큰 면적 (2 m²) 시나리오에서 우수
+
+### 7.4 시나리오별 결과
+
+| 시나리오 | HRR | area | IoU step 6 | FNR | H5? |
+|---|---|---|---|---|---|
+| **1000kw_2m2_T01** | 1000 | 2 m² | **0.754** | 8.2% | ✅ |
+| **1000kw_2m2_T05** | 1000 | 2 m² | **0.754** | 24.0% | ✅ |
+| **500kw_2m2_T05** | 500 | 2 m² | **0.745** | 9.4% | ✅ |
+| **1500kw_2m2_T05** | 1500 | 2 m² | **0.715** | 28.4% | ✅ |
+| 1500kw_1m2_T02 | 1500 | 1 m² | 0.689 | 12.6% | (close) |
+| 500kw_2m2_T02 | 500 | 2 m² | 0.600 | 9.1% | ❌ |
+| 1500kw_1m2_T03 | 1500 | 1 m² | 0.566 | 12.7% | ❌ |
+| 1000kw_1m2_T01 | 1000 | 1 m² | 0.494 | 2.0% | ❌ |
+| 1000kw_1m2_T03 | 1000 | 1 m² | 0.436 | 9.7% | ❌ |
+| 500kw_1m2_T04 | 500 | 1 m² | 0.322 | 2.8% | ❌ |
+| 500kw_1m2_T02 | 500 | 1 m² | 0.311 | 4.0% | ❌ |
+| 500kw_1m2_T03 | 500 | 1 m² | 0.225 | 11.4% | ❌ |
+| 500kw_1m2_T01 | 500 | 1 m² | 0.211 | 1.4% | ❌ |
+
+→ 패턴: **면적 (1 m² vs 2 m²) 이 IoU 의 dominant factor**. HRR 보다 면적이 더 큰 영향.
+
+### 7.5 Sparse FNO vs Sparse ConvLSTM 정밀 비교
+
+| 측면 | Sparse ConvLSTM (L4e) | Sparse FNO (L4e') |
+|---|---|---|
+| Input channels | 5 | **6 (sensor indicator 추가)** |
+| Architecture | 3D ConvLSTM | Fourier Neural Operator |
+| Params | 349K | **1.79M (5×)** |
+| Mean IoU | 0.581 | 0.525 |
+| **Mean FNR** | 23.0% | **10.4%** ★ |
+| H5 통과 시나리오 | 0/13 | **4/13** |
+| 학습 epoch | 50 | 100 |
+| 학습 시간 | ~2-3시간 CPU | ~3시간 RunPod (또는 CPU) |
+
+**해석**:
+- ConvLSTM IoU 가 살짝 높지만, **FNO 는 H5 임계를 *일부* 통과** (binary pass/fail 관점에서 우위)
+- FNO 의 FNR 10.4% — H4 (< 10%) 임계 거의 통과
+- **5× 큰 모델 capacity 가 sparse regime 에서 marginal gain**: 33 시나리오로는 FNO 의 풀 잠재력 발휘 어려움
+
+### 7.6 결론 — Tier 2 sparse 의 두 가지 best
+
+| 사용처 | 선택 |
+|---|---|
+| Best IoU | **L4e Sparse ConvLSTM + re-sparsify** (0.581) |
+| Best FNR / 시나리오별 H5 통과 | **L4e' Sparse FNO 6-ch + re-sparsify** (10.4%, 4/13) |
+| Best overall (모든 경우) | **L4f Tier 1 GNN** (0.904, 11/13 FNR<10%) |
+
+Tier 1 GNN 은 여전히 단독 best. 단 Tier 2 sparse 도 paper 의 **충실한 비교군**으로 발전:
+- Conservative bias (L-013) 발견 + 해결
+- Sparse-aware 재학습으로 보간 baseline 의 2× 도달
+- Sensor indicator channel 의 효과 정량화 (FNR 개선 → 안전한 운용)
 
 ### 6.6 결론
 

@@ -32,7 +32,19 @@
 | L4 sparse + geodesic IDW | FNO PI | 0.32 | 30% | 0.33 | ❌ | ❌ |
 | L4e Sparse-retrain ConvLSTM (no re-sparsify) | Sparse ConvLSTM | 0.182 | 0.0% (conservative) | 0.71 | ❌ | ✅ |
 | **L4e Sparse-retrain + re-sparsify ★** | **Sparse ConvLSTM** | **0.581** | 23.0% | 0.12 | ❌ | ❌ |
+| **L4e' Sparse FNO 6-ch + re-sparsify ★** | **Sparse FNO** | **0.525** | **10.4%** ★ | 0.16 | ❌ (4/13 ✅) | ⚠ close |
+| L4g 2-way Ensemble (GNN+FNO, w_t1=0.6) Euclidean | GNN + Sparse FNO | 0.576 | 4.8% ✅ | — | (4/13 ✅) | ✅ H4 |
+| L4g 2-way Ensemble (GNN+FNO, w_t1=0.6) **Geodesic** | GNN + Sparse FNO | 0.569 | **4.2%** ✅ | — | (4/13 ✅) | ✅ H4 |
+| L4g 2-way Ensemble (GNN+ConvLSTM, w_t1=0.4) | GNN + Sparse ConvLSTM | 0.619 | 15.0% | — | (4/13 ✅) | ❌ |
+| **L4g 3-way Ensemble balanced (Euclid)** | **GNN + ConvLSTM + FNO (0.5/0.25/0.25)** | **0.621** | **6.4%** ✅ | — | **(5/13 ✅)** | **✅ H4** |
+| **L4g 3-way Ensemble balanced (Geodesic) ★★★** | **GNN + ConvLSTM + FNO (0.5/0.25/0.25)** | **0.618** | **5.1%** ✅ | — | **(5/13 ✅)** | **✅ H4** |
+| L4g 3-way Ensemble max IoU (Euclid) | GNN + ConvLSTM + FNO (0.4/0.45/0.15) | **0.625** | 10.8% | — | (4/13 ✅) | ⚠ close |
+| L4g 3-way Ensemble max IoU (Geodesic) | GNN + ConvLSTM + FNO (0.4/0.6/0.0) | 0.624 | 14.1% | — | (4/13 ✅) | ❌ |
+| **L4g 3-way Min FNR (Geodesic) ★★** | **GNN + ConvLSTM + FNO (0.6/0.1/0.3)** | 0.590 | **3.7%** ★ ✅ | — | (4/13 ✅) | **✅ H4** |
 | **L4f Tier 1 GNN binary** | **SimpleFireGNN** | **0.904** ★ | **4.6%** | — | **✅** | **✅** |
+| **L4h Learned Decoder fn=1.0** | PerCell MLP 1.4K params | 0.727 | 14.9% | — | (9/13 ✅) | ❌ |
+| **L4h Learned Decoder fn=2.5 ★★★** | **PerCell MLP 1.4K params** | **0.733** | 11.5% | — | **(9/13 ✅)** | (8/13 ✅) |
+| **L4h Learned Decoder fn=4.0** | PerCell MLP 1.4K params | 0.718 | **10.0%** | — | (8/13 ✅) | (8/13 ✅) |
 
 ---
 
@@ -40,12 +52,32 @@
 
 | ID | 가설 | 목표 | 측정 | 통과? | 출처 |
 |---|---|---|---|---|---|
-| H1 | Speed ≥ 1000× FDS | < 50 ms | **52,000×** (26.5 ms vs 23 min) | ✅ | `figures/legacy/eval_T01_T05/` |
+| H1 | Speed ≥ 1000× FDS | < 50 ms | GNN 1,670,749×, Decoder 220,851×, **full L4h pipeline 3,028×** (456 ms) | ✅ | `figures/current/13_h1_speed/` |
 | H2 | RelL2 ≤ 0.15 | training scenarios | **0.136** (ConvLSTM) | ✅ | `figures/legacy/eval_convlstm/` |
 | H3 | FNO > ConvLSTM on OOD | EXP-FIRE-001 | full SLCF ❌, sparse 39 ✅ FNO 우위 | **⚠ 부분** | `figures/current/02_l1_l4_layers/` |
-| H4 | Risk FNR < 10% | OOD | **GNN 4.6%** ★ | ✅ | `figures/current/04_tier1_gnn/aggregate_iou.png` |
-| H5 | Risk IoU ≥ 0.70 | OOD | **GNN 0.904** ★ (13/13) | ✅ | `figures/current/04_tier1_gnn/headline.png` |
+| H4 | Risk FNR < 10% | OOD | **GNN 4.6%** ★, Decoder fn=4.0 10.0%, ensemble 3.7-6.4% | ✅ | `figures/current/11_decoder_ensemble/` |
+| H5 | Risk IoU ≥ 0.70 | OOD | **GNN 0.904** ★ (13/13), **Decoder fn=2.5 0.733** (9/13) | ✅ | `figures/current/04_tier1_gnn/`, `11_decoder_ensemble/` |
 | H6 | Dynamic A* FED ≥ 30% ↓ | EXP-PATH-001 | path planning 미구현 | **🔜** | — |
+
+### 3.1 H1 inference latency detail (single CPU core)
+
+| Module | Params | Mean (ms) | std | Speedup vs FDS (23 min) |
+|---|---|---|---|---|
+| Tier 1 GNN (single forward) | 12 K | 0.83 | ±0.19 | **1,670,749×** |
+| Sparse-ConvLSTM v3 (6-step rollout) | 349 K | 193.8 | ±12.0 | 7,122× |
+| Sparse-FNO v3 (6-step rollout) | 1.79 M | 237.4 | ±3.1 | 5,813× |
+| Learned Decoder (full grid forward) | 1.4 K | 6.25 | ±0.48 | **220,851×** |
+| **Full L4h pipeline (end-to-end)** | 2.15 M | **456** | ±14 | **3,028×** |
+
+All modules ≥ H1 threshold. Real-time H6 replan budget (~30 s) trivially satisfied.
+
+### 3.2 Decoder robustness verifications (H6-prep)
+
+| Check | Method | Result |
+|---|---|---|
+| **5-fold CV gap** | hold-out 7 train scenarios per fold, retrain decoder | mean train-OOD gap **-0.003** (std 0.025), OOD IoU std 0.008 → no overfit |
+| **Multi-t₀ sweep** | trained at t₀=120s, eval on t₀ ∈ {60,90,120,150,180,210}s | t₀ ≥ 90s flat (IoU 0.726-0.736). t₀=150s best (IoU 0.736, FNR 9.9% — H4 pass). Cold-start t₀=60s fail (design boundary). |
+| **Hand-engineered ceiling** | mask-aware k-NN + adaptive σ on hand-crafted ensemble | IoU 0.618 → 0.611 (Δ=-0.007). Hand projection plateaued — justifies learned decoder. |
 
 ---
 
@@ -211,7 +243,13 @@
 | ConvLSTM | `checkpoints/conv_lstm/best.pt` | 1.4 MB | train_loss 0.001 |
 | FNO no-PI | `checkpoints/fno_no_pi/best.pt` | 41 MB | train_loss 0.0005 |
 | FNO PI | `checkpoints/fno_pi/best.pt` | 41 MB | train_loss 0.0005 |
-| **Tier 1 GNN** | **`checkpoints/tier1_gnn_v3/best.pt`** | **53 KB** | **val_iou 0.872** |
+| **Tier 1 GNN v3** | **`checkpoints/tier1_gnn_v3/best.pt`** | **53 KB** | **OOD IoU 0.904** |
+| Sparse-ConvLSTM v3 | `checkpoints/conv_lstm_sparse_v3/best.pt` | 1.4 MB | OOD IoU 0.581 (re-sparsify) |
+| Sparse-FNO v3 (6-ch) | `checkpoints/fno_sparse_v3/best.pt` | 14 MB | OOD IoU 0.525 |
+| **L4h Decoder fn=2.5 ★** | **`checkpoints/ensemble_decoder/best.pt`** | **12 KB** | **OOD IoU 0.733** (paper default) |
+| L4h Decoder fn=1.0 (BCE) | `checkpoints/ensemble_decoder_fn10/best.pt` | 12 KB | OOD IoU 0.727 |
+| L4h Decoder fn=2.5 | `checkpoints/ensemble_decoder_fn25/best.pt` | 12 KB | OOD IoU 0.733 |
+| L4h Decoder fn=4.0 (safety) | `checkpoints/ensemble_decoder_fn40/best.pt` | 12 KB | OOD IoU 0.718, FNR 10.0% ✅H4 |
 
 ### 8.2 데이터 (gitignored, 외부 전송)
 

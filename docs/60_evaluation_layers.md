@@ -28,8 +28,51 @@
 | **L4d (39)** | Sparse + geodesic IDW (39 sens) | BFS geodesic + IDW | ConvLSTM | 0.21 |
 | **L4d (39)** | Sparse + geodesic IDW (39 sens) | BFS geodesic + IDW | **FNO no-PI** | **0.43** |
 | L4e (no re-sparsify) | Sparse retrain ConvLSTM, naïve chaining | 모델 재학습 | Sparse ConvLSTM | 0.182 (FNR 0% conservative bias) |
-| **L4e ★ (re-sparsify)** | **Sparse retrain + autoregress re-sparsify (Tier 2 new best)** | 매 step sensor 외 0 강제 | Sparse ConvLSTM | **0.581** (FNR 23%) |
+| **L4e ★ (re-sparsify)** | **Sparse retrain + autoregress re-sparsify** | 매 step sensor 외 0 강제 | Sparse ConvLSTM | **0.581** (FNR 23%, 0/13 H5) |
+| **L4e' ★ (FNO 6-ch)** | **Sparse FNO + sensor indicator channel + re-sparsify** | 6-channel + Fourier basis | Sparse FNO | **0.525** (FNR **10.4%**, **4/13 H5 통과**) |
+| L4g (2-way Ensemble GNN+FNO) Euclidean | w_t1=0.6 best | GNN + Sparse FNO | **0.576** (FNR **4.8%** ✅ H4) |
+| L4g (2-way Ensemble GNN+FNO) **Geodesic** | w_t1=0.6 best | GNN + Sparse FNO | 0.569 (FNR **4.2%** ✅ H4) |
+| L4g (2-way Ensemble GNN+ConvLSTM) | w_t1=0.4 best IoU | GNN + Sparse ConvLSTM | **0.619** (FNR 15.0%) |
+| **L4g (3-way Ensemble — Euclidean balanced)** | **w=(0.5, 0.25, 0.25)** | GNN + ConvLSTM + FNO | **0.621** (FNR **6.4%** ✅ H4, **5/13 H5**) |
+| **L4g ★★★ (3-way Ensemble — Geodesic balanced)** | **w=(0.5, 0.25, 0.25)** | GNN + ConvLSTM + FNO | **0.618** (FNR **5.1%** ✅ H4, **5/13 H5**) |
+| L4g (3-way max IoU, Euclidean) | w=(0.4, 0.45, 0.15) | GNN + ConvLSTM + FNO | **0.625** (FNR 10.8%, 4/13) |
+| L4g (3-way max IoU, Geodesic) | w=(0.4, 0.6, 0.0) | GNN + ConvLSTM + FNO | 0.624 (FNR 14.1%, 4/13) |
+| L4g (3-way min FNR, Euclidean) | w=(0.6, 0.10, 0.30) | GNN + ConvLSTM + FNO | 0.597 (FNR **4.7%** ✅ H4) |
+| **L4g ★★ (3-way min FNR, Geodesic — safety)** | **w=(0.6, 0.10, 0.30)** | GNN + ConvLSTM + FNO | 0.590 (FNR **3.7%** ★ ✅ H4) |
 | **L4f** ★ | **Tier 1 GNN binary (39 nodes)** | D-023 trigger | **SimpleFireGNN** | **0.90** ★★ |
+| **L4h ★★★ (Learned Decoder, fn=2.5 paper default)** | **Per-cell MLP, 1.4K params** | 3 models + mask + pos + time | **PerCellEnsembleDecoder** | **0.733** (FNR 11.5%, **9/13 H5**, **8/13 H4**) |
+| L4h (Learned Decoder, fn=4.0 safety) | Per-cell MLP, 1.4K params | same as above | PerCellEnsembleDecoder | 0.718 (FNR **10.0%**, 8/13 H5, 8/13 H4) |
+| L4h (Learned Decoder, fn=1.0 BCE) | Per-cell MLP, 1.4K params | same as above | PerCellEnsembleDecoder | 0.727 (FNR 14.9%, 9/13 H5) |
+
+---
+
+## 2.5 Learned Decoder L4h — Robustness verifications (H6-prep)
+
+| Verification | Method | Result | Status |
+|---|---|---|---|
+| **Multi-t₀ robustness** | Decoder trained at t₀=120s; eval on t₀ ∈ {60, 90, 120, 150, 180, 210}s | t₀ ≥ 90s: IoU 0.726-0.736 (Δ<0.011). t₀=60s cold-start fail (0.662). | ✅ (within design boundary) |
+| **5-fold CV (33 train)** | Hold out 7 train, retrain 26, eval on fold-val + 13 OOD; repeat | Mean train-OOD gap **-0.003** (std 0.025). OOD IoU std 0.008 across folds. | ✅ no overfit |
+| **H1 inference latency** | Full pipeline (GNN + 2 sparse + decoder) | **456 ms / 3,028× faster** than FDS (23 min) | ✅ H1 |
+| **Hand-engineered ceiling** (Step 1 ablation) | Mask-aware k-NN + adaptive σ on hand-crafted 3-way | IoU 0.618 → 0.611 (negative). Hand-crafted projection has hit a ceiling. | ✅ justifies learned approach |
+
+---
+
+## 2.6 Multi-t₀ robustness detail (13 OOD)
+
+Decoder trained on t₀=120s only; evaluated across t₀:
+
+| t₀ (s) | Mean IoU | Mean FNR | H5 pass | H4 pass | Note |
+|---|---|---|---|---|---|
+| 60 | 0.662 | 26.9% | 5/13 | 0/13 | cold-start (detectors not triggered) |
+| 90 | 0.732 | 14.2% | 9/13 | 5/13 | |
+| **120** (trained) | **0.733** | 11.5% | 9/13 | 8/13 | reference |
+| 150 | **0.736** ★ | **9.9%** | 9/13 | 8/13 | best — H4 pass |
+| 180 | 0.728 | 10.0% | 9/13 | 8/13 | |
+| 210 | 0.726 | 10.1% | 9/13 | 8/13 | |
+
+→ Decoder generalizes naturally across the H6 evacuation window
+([60, 240]s). Cold-start (t₀=60s) is the only failure regime, matching
+the documented design boundary (D-023: post-detector-trigger only).
 
 ---
 

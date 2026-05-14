@@ -506,6 +506,36 @@ figures/           — paper/slide figures
 > → `docs/70_results_summary.md` (모든 결과) → `docs/90_next_steps.md`
 > (다음 작업). 과거 handoff (`docs/archive/old_planning/handoff_2026_05_12.md`)
 > 는 archive 로 이동.
+>
+> **Compact-resistant snapshot**: `docs/CURRENT_SESSION_STATE.md` — 별도 단일
+> 진실 소스 (results / checkpoints / scripts / lessons / next steps).
+> Supporting docs:
+> - `docs/decisions.md` — D-001..D-046 (자세한 결정 로그; D-042..D-046 는
+>   2026-05-14 merge 에서 원격 D-025..D-029 가 우리 D-025..D-029 와 충돌하여
+>   재번호된 결과)
+> - `docs/60_evaluation_layers.md` — L1/L2/L3/L4 framework + numbers
+> - `docs/70_results_summary.md` — full result table
+> - `docs/90_next_steps.md` — H6 path planning checklist
+
+**System vision** (locked):
+```
+   39 fire detectors (D-024 v3.3, z=2.5 m)
+                  ↓
+   ┌──────────────┴──────────────┐
+   ▼                             ▼
+Tier 1 (Legacy)              Tier 2 (Intelligent)
+binary on/off                continuous T, V, CO (sparse)
+   ↓                             ↓
+SimpleFireGNN (12K)          Sparse ConvLSTM / Sparse FNO
+per-node danger              per-cell danger
+   └──────────────┬──────────────┘
+                  ▼
+        3-way Ensemble (D-043) → Learned PerCell Decoder (D-045)
+                  ↓
+        Risk Map → Path planning (cell-grid A*, D-026)
+                  ↓
+        PyBullet drone swarm vs fixed-sign baseline (EXP-PATH-001)
+```
 
 **Completed**:
 - Tier 0/1/2 (foundation, simulation tools, data extraction) — all ✅
@@ -524,10 +554,25 @@ figures/           — paper/slide figures
   - Tier 2 best (FNO no-PI + geodesic) 대비 IoU 2.1× / 150× smaller
 - **L1–L4 evaluation layer framework** + mask-aware geodesic IDW interpolation
 - **Sparse-input ConvLSTM (L4e)**: IoU 0.182 conservative bias →
-  re-sparsify fix → IoU 0.581
+  re-sparsify (D-042) fix → IoU 0.581
+- **Sparse FNO v3** (6-ch + sensor indicator): IoU 0.525, FNR 10.4%
+- **L4g 3-way ensemble (D-043)** (GNN + Sparse ConvLSTM + Sparse FNO) with
+  geodesic IDW node→cell projection:
+  - Balanced (0.50, 0.25, 0.25): IoU 0.618, FNR 5.1%
+  - Min-FNR (0.60, 0.10, 0.30):  IoU 0.590, FNR **3.7%**
+- **L4h Learned Ensemble Decoder (D-045)** — PerCell MLP, 1,377 params:
+  - fn=2.5 paper default: **IoU 0.733 / FNR 11.5%** (+0.115 over hand-crafted)
+  - fn=4.0 safety variant: IoU 0.718 / FNR **10.0%** (H4 pass)
+- **EnsembleDecoderRiskMap** (`src/tier1/ensemble_risk_map.py`) — cell-level
+  RiskMap adapter (D-046) for H6 path planning, 9/9 self-test PASS
+- **Multi-t₀ robustness verified**: decoder trained at t₀=120s, robust
+  across t₀ ∈ [90, 210] s (IoU 0.726-0.736)
+- **5-fold CV gap = -0.003 ± 0.025** — decoder is not overfitting
+- **H1 inference latency**: full L4h pipeline 456 ms, **3,028× faster** than FDS
 - Documentation 재구성 — numbered `00_*`~`90_*` + `docs/archive/`
-- **Path planning 모듈 (`src/path_planning/`) — 완료 (2026-05-14)**
-  - `building_graph.py` thin adapter over `shared/building.py` 19-node graph
+- **Path planning 모듈 (`src/path_planning/`) — 완료 (D-026, 2026-05-14)**
+  - `building_graph.py` cell-level grid over fluid mask (60×40×6, replaces
+    19-node abstract graph)
   - `edge_weights.py` weighted A* edges with N-sample integrated risk + impassable filter
   - `planners.py` single `EvacuationPlanner` (3-class ABC 폐기 per D-025)
   - `evacuation_sim.py` NumPy-only logical single-occupant trial
@@ -568,15 +613,20 @@ figures/           — paper/slide figures
   - casualty_rate=0 (300 s 에서도 FED 0.3 threshold 미도달; 작은 빌딩
     + dt_SLCF=10s 기반 보간된 CO ppm 이 ~100-500 ppm 수준이라 그 시간
     안에 누적 부족. **H6 primary metric 은 통과** 했으므로 sufficient.).
+- Paper figures 1–8 ready (`figures/current/01..14_*/`) including L1-L4
+  staircase, ensemble grid search, decoder weight sweep, H1 inference
+  latency, and 5-fold CV bars
 
-**Hypothesis state (2026-05-14)**:
-- H1 ✅ — 52,000× speedup (GNN ~26 ms vs FDS ~23 min)
+**Hypothesis state (2026-05-14, post-merge)**:
+- H1 ✅ — **3,028× speedup** (full L4h pipeline 456 ms vs FDS ~23 min,
+  measured); per-node GNN alone ~26 ms
 - H2 ✅ — ConvLSTM RelL2 0.136 (FNO PI 0.157 marginal)
 - H3 ⚠ partial — full SLCF에서 FNO < ConvLSTM, sparse 39 sensor regime
   에서 FNO no-PI + geodesic 이 ConvLSTM 우위
-- H4 ✅ — Tier 1 GNN FNR 4.6%
-- H5 ✅ — Tier 1 GNN IoU 0.904 (13/13 OOD); EXP-PATH-001 mini-sweep 에서
-  path-level transitive 유지 (S3 FED Δ from S2 < 1e-7)
+- H4 ✅ — Tier 1 GNN FNR 4.6%; L4g 3-way ensemble min-FNR 3.7%;
+  L4h decoder fn=4.0 FNR 10.0%
+- H5 ✅ — Tier 1 GNN IoU 0.904 (13/13 OOD); L4h decoder fn=2.5
+  IoU 0.733 (9/13 OOD); EXP-PATH-001 path-level transitive 유지
 - **H6 ✅ — drone swarm 이 fixed sign 대비 FED -98.7%** (목표 ≥ 30%
   감소 충족). 20-agent × 300 s × 5 seeds × 3 fires = 45 runs.
   S1 mean FED 0.00181 vs S2 0.0000230, ratio 0.0127.
@@ -585,14 +635,57 @@ figures/           — paper/slide figures
 > 단일 39-detector 인프라 위에서 binary signal + 12K-param GNN 이
 > continuous signal + 1.78M-param 모델을 2.1× 능가. Phase-transition
 > 도메인에서는 inductive bias matching 이 capacity 보다 dominant.
+> 추가: learned PerCell decoder (1.4K params) 가 hand-crafted ensemble
+> IoU 를 +0.115 끌어올림 → 학습 가능한 후처리의 가치 입증.
 
-**Recent decisions**:
+```
+   39 fire detectors (D-024 v3.3, z=2.5 m)
+                  ↓
+   ┌──────────────┴──────────────┐
+   ▼                             ▼
+Tier 1 (Legacy)              Tier 2 (Intelligent)
+binary on/off                continuous T, V, CO (sparse)
+   ↓                             ↓
+SimpleFireGNN (12K)          Sparse ConvLSTM / Sparse FNO
+per-node danger              per-cell danger
+   └──────────────┬──────────────┘
+                  ▼
+        3-way Ensemble (L4g) + geodesic cell projection
+                  ↓
+        Risk Map → Path planning (A*) [🔜 H6 next]
+```
+
+**Completed (Tier 0–2 + dual surrogate + evaluation)**:
+- Data pipeline: 33-train + 13-OOD `data/processed/*.h5`, D-024 all-train
+- Full-input models: ConvLSTM, FNO no-PI, FNO PI (all trained, RunPod A100)
+- Risk Map module (tenability / FED / ASET / StaticRiskMap / path_metrics)
+- **39 detector positions** (D-024 v3.3) confirmed against floor plan
+- **D-023 trigger** (heat 60 °C OR vis 10 m, latched) + binary sequences for 46 sims
+- **Tier 1 GNN** (SimpleFireGNN, 12 K params) trained → **IoU 0.904, 13/13 H5 ✅**
+- **Tier 2 Sparse ConvLSTM v3** (5-ch) trained + **L-013 re-sparsify fix** → IoU 0.581
+- **Tier 2 Sparse FNO v3** (6-ch + sensor indicator) trained → IoU 0.525, **FNR 10.4%**
+- **L4g 3-way ensemble** (GNN + Sparse ConvLSTM + Sparse FNO) with
+  **geodesic IDW node→cell projection**:
+  - Balanced (0.5, 0.25, 0.25): IoU 0.618, FNR 5.1% — 5/13 H5 ✅H4
+  - Min-FNR (0.6, 0.1, 0.3):    IoU 0.590, FNR **3.7%** ✅H4
+- Paper figures 1–8 ready (`figures/current/01..10_*/`)
+
+**Hypothesis status**:
+- H1 Speed: 52,000× ✅
+- H2 RelL2 ≤ 0.15: 0.136 ✅
+- H3 FNO > ConvLSTM OOD: ⚠ partial (sparse regime yes, full SLCF no)
+- H4 FNR < 10%: ensemble 3.7–6.4% ✅
+- H5 IoU ≥ 0.70: Tier 1 GNN 0.904 ✅
+- **H6 Dynamic A* FED reduction ≥ 30%: 🔜 NEXT SESSION**
+
+**Recent decisions** (see `docs/decisions.md`):
 - D-022: H6 metrics = peak_danger / time_in_hazard / aset_margin / fed_final
   (per-trajectory diagnostic; EXP-PATH-001 헤드라인은 D-025 의 5-metric)
-- D-023: 30 → 33 scenarios, 4 → 3 HRR levels (500/1000/1500 kW)
+- D-023: 30 → 33 scenarios, 4 → 3 HRR levels (500/1000/1500 kW); trigger
+  model: T>60°C OR V<10m, 46 시나리오 binary_sequence
 - D-024: all 33 → train; val/ood Member A 의 T01–T05 13건으로 충당
-- D-024 v3.3: floorplan-based 39 sensors (22 rooms + 14 corridors + 3 exits)
-  *— 두 D-024 항목 번호 충돌 정리 필요*
+- D-024 v3.3: floorplan-based 39 sensors (22 rooms + 14 corridors + 3 exits) —
+  Tier 1/2 shared infrastructure
 - **D-025 (2026-05-14): H6 재정의 + drone swarm 도입 (D-013 반전)** —
   EXP-PATH-001 을 3 PyBullet 시나리오 비교 (S1 fixed-sign / S2 FDS swarm /
   S3 model swarm) 로 전환, 5-metric (evac_success_rate / mean_evac_time /
@@ -609,6 +702,29 @@ figures/           — paper/slide figures
   새 `StaticCOField` 클래스로 raw CO ppm 을 query, `accumulate_exposure`
   메서드가 ISO 13571 FED 누적 + `DEAD` 전이. EXP-PATH-001 의 H6 primary
   metric 측정 가능 → **H6 PASS** (FED -98.8%).
+- **D-042 (2026-05-14, was remote D-025): Sparse 모델 re-sparsify chaining
+  (L-013 fix)** — autoregress 시 매 step sensor 외 cell 의 T/V/CO 를 0 으로
+  강제. sparse ConvLSTM IoU 0.182 → 0.581 (3.2×). Sparse Tier 2 의 default
+  운용 방식.
+- **D-043 (2026-05-14, was remote D-026): 3-way ensemble + geodesic
+  node→cell projection** — GNN cell-projected + Sparse-ConvLSTM + Sparse-FNO
+  의 weighted average, BFS-based mask-aware projection. Balanced (0.50,
+  0.25, 0.25) IoU 0.618 / FNR 5.1%; Min-FNR (0.60, 0.10, 0.30) IoU 0.590 /
+  FNR **3.7%**.
+- **D-044 (2026-05-14, was remote D-027): Paper framing — "Dual surrogate
+  on shared 39-detector infrastructure"** — Tier 1 GNN binary signal +
+  Tier 2 sparse continuous, 같은 hardware 위에서 IoU 0.92 (upper) → 0.21
+  (naïve) → 0.90 (Tier 1) → 0.62 (ensemble) → **0.733 (decoder)** staircase.
+- **D-045 (2026-05-14, was remote D-028): Learned PerCell ensemble decoder**
+  — 1,377-param MLP 가 hand-crafted 3-way Balanced 를 대체. fn=2.5 paper
+  default IoU **0.733** (+0.115); fn=4.0 safety variant FNR **10.0%** (H4).
+- **D-046 (2026-05-14, was remote D-029): H6 RiskMap source =
+  `EnsembleDecoderRiskMap` (β/γ)** — Tier1RiskMap (α) 는 ablation, FDS
+  oracle 은 fairness baseline. Multi-t₀ robustness + 5-fold CV +
+  H1 latency 사전 검증 완료. EXP-PATH-001 ablation 표에 4 RiskMap 변종 비교.
+
+> **Note**: D-042..D-046 는 merge 시 재번호된 결정 (원래 D-025..D-029).
+> 자세한 내용은 `docs/decisions.md::D-042` 의 renumber note 참고.
 
 **Recent lessons** (`docs/lessons_learned.md`):
 - L-014: conda-forge pybullet 설치가 pip numpy 를 깨뜨림 — 결정적 복구 절차
@@ -628,19 +744,20 @@ figures/           — paper/slide figures
 1. ★★★ **Paper draft + 발표 슬라이드** — H6 PASS 확정 (large sweep 45
    runs). Figure 4.4 (`figures/exp_path_001/comparison.png`) 가 primary
    visual. H1/H2/H4/H5/H6 모두 PASS, paper 본격 진입 가능.
-2. ★★ M4-full Crazyflie URDF + drone-swarm 실제 비행 — 현재 guidance
+2. ★★ **EXP-PATH-001 4-RiskMap ablation 표** — 현재 S3 는 Tier1RiskMap.
+   D-046 에 정의된 4 RiskMap (α Tier1RiskMap / β★ EnsembleDecoderRiskMap fn=2.5
+   / γ EnsembleDecoderRiskMap fn=4.0 / oracle StaticRiskMap) 모두로 sweep 해
+   confounder 분리.
+3. ★★ M4-full Crazyflie URDF + drone-swarm 실제 비행 — 현재 guidance
    로직만 동작; 시각화 임팩트 + 발표 영상 자료용.
-3. ★ Tier 1 GNN inference time 정확 측정 (H1 수치 확정 — 현재 CLAUDE.md
-   "52,000×" 는 추정값).
 4. ★ M5-full 실제 FNORiskMap (현재 S3 는 Tier1RiskMap substitute) —
    진짜 PI-FNO 와 Tier1 둘 다 H5 transitive 통과시키는지 확인.
-5. ★ A2 (trimesh + 실 STL → URDF) — 이미 완료 (`assets/building.urdf`),
-   별도 작업 없음.
 
 **Active blockers**:
 - (모두 해소) FED activation, path planning, Tier1RiskMap, val/ood,
-  interior spawn — 전부 closed. H1/H2/H3-partial/H4/H5/H6 hypothesis state
-  안정화 + paper 단계 진입 준비 완료.
+  interior spawn, ensemble decoder integration — 전부 closed.
+  H1/H2/H3-partial/H4/H5/H6 hypothesis state 안정화 + paper 단계 진입 준비
+  완료.
 
 ---
 

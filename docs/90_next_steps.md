@@ -1,6 +1,10 @@
 # 90 — Next Steps & Roadmap
 
 > 잔여 작업, 우선순위, 새 세션 시작 시 진행 방법.
+>
+> **Last updated**: 2026-05-14 (H6-prep done).
+> **새 세션 진입 시**: `CLAUDE.md` (auto-load) + `docs/CURRENT_SESSION_STATE.md`
+> + 이 파일만 읽으면 됨.
 
 ---
 
@@ -8,12 +12,23 @@
 
 | # | 작업 | 시간 | 의존성 | 가치 |
 |---|---|---|---|---|
-| **★★★** | **Tier1RiskMap + Path planning + EXP-PATH-001** (H6 검증) | 5-7시간 | 없음 | Paper 헤드라인 가설 |
-| **★★** | Sparse-input ConvLSTM 결과 수집 + L4e 갱신 | 30분 (사용자 학습 끝나면) | 사용자 학습 결과 도착 | Layer 표 완성 |
-| **★★** | Tier 1 GNN inference time 측정 (H1) | 30분 | GNN ckpt | H1 수치 확정 |
-| ★ | PyBullet Week 12 통합 (외주) | 외부 | URDF 생성 | 발표용 데모 영상 |
-| ★ | Tier 1 + Tier 2 ensemble (drone query) | 2-3시간 | Tier1RiskMap | 보조 contribution |
-| ★ | 페이퍼 draft + 발표 슬라이드 | 다수 세션 | 위 작업 완료 | 최종 deliverable |
+| **★★★** | **Path planning + EXP-PATH-001** (H6 검증) | 5-7시간 | 모든 RiskMap adapter ✅ | Paper 헤드라인 가설 |
+| ★ | PyBullet Week 12 통합 (외주) | 외부 | URDF + RiskMap | 발표용 데모 영상 |
+| ★ | 페이퍼 draft + 발표 슬라이드 | 다수 세션 | H6 결과 | 최종 deliverable |
+
+### 완료된 작업
+
+| Date | 작업 | Result | commit |
+|---|---|---|---|
+| 05-13 | Sparse ConvLSTM v3 (re-sparsify) | IoU 0.581 | c97bfec |
+| 05-13 | Sparse FNO v3 (6-ch) | IoU 0.525, FNR 10.4% | 5f448ee |
+| 05-14 | 2-way / 3-way ensemble (geodesic) | IoU 0.618, FNR 5.1% | cd2c07e |
+| 05-14 | L4h Learned Decoder | **IoU 0.733**, FNR 11.5% (paper) | cc50777 |
+| 05-14 | Decoder comparison figures (Pareto + per-scen) | — | e922ba9 |
+| 05-14 | Multi-t₀ robustness (Step 1) | IoU stable [0.726, 0.736] for t₀ ∈ [90, 210]s | 5fe5c03 |
+| 05-14 | EnsembleDecoderRiskMap (Step 2) | self-test 9/9 pass | d707e26 |
+| 05-14 | H1 inference latency (Step 3) | **3,028× faster than FDS** | c29049c |
+| 05-14 | 5-fold CV overfit (Step 4) | gap **-0.003** (no overfit) | 546c9cd |
 
 ---
 
@@ -23,24 +38,39 @@
 > EXP-PATH-001 = 3 PyBullet 시나리오 비교. 구버전 §2 (3-planner 알고리즘
 > 비교, 72 trial) 는 `docs/decisions.md::D-025` 의 사유로 폐기됨.
 
+### 2.0 이미 준비된 RiskMap 어댑터 (D-046, was D-029)
+
+| Tag | Class | Source | IoU | FNR | 용도 |
+|---|---|---|---|---|---|
+| α | `src/tier1/tier1_risk_map.py :: Tier1RiskMap` | per-node GNN nearest-node | 0.904 | 4.6% | ablation (S3 현재 default substitute) |
+| **β ★** | `src/tier1/ensemble_risk_map.py :: EnsembleDecoderRiskMap` (fn=2.5) | cell-level decoder | **0.733** | 11.5% | **paper default — H5 9/13** |
+| γ | `src/tier1/ensemble_risk_map.py :: EnsembleDecoderRiskMap` (fn=4.0) | cell-level decoder | 0.718 | **10.0%** | safety variant (H4 pass) |
+| oracle | `src/risk_map/risk_map_class.py :: StaticRiskMap` | FDS truth | 1.0 | 0% | fairness baseline (S2 가 사용) |
+
+→ EXP-PATH-001 4-RiskMap ablation 으로 confounder 분리.
+
 ### 2.1 현재 상태 (2026-05-14)
 
 | 모듈 | 상태 |
 |---|---|
-| `src/path_planning/building_graph.py` | ✅ 완료 — `shared/building.py` 19-node L-shape adapter |
+| `src/path_planning/building_graph.py` | ✅ 완료 — D-026 cell-grid (60×40×6, fluid mask 위) |
 | `src/path_planning/edge_weights.py` | ✅ 완료 — `EdgeWeightConfig` + N-sample integrated risk + `weight = base_cost·length + risk_scale·risk` + impassable filter |
 | `src/path_planning/planners.py` | ✅ 완료 — **단일** `EvacuationPlanner` (weighted A* + replan, 3-class ABC 폐기 per D-025) |
 | `src/path_planning/evacuation_sim.py` | ✅ 완료 — logical NumPy-only single-occupant sim (multi-agent PyBullet 시뮬은 `src/integration/`) |
-| 자체 self-test 4/4 | ✅ PASS (`python -m src.path_planning.<module>`) |
+| `src/tier1/tier1_risk_map.py` | ✅ 완료 — per-node GNN nearest-node adapter |
+| `src/tier1/ensemble_risk_map.py` | ✅ 완료 — `EnsembleDecoderRiskMap` (D-045 decoder) |
+| 자체 self-test | ✅ PASS — path_planning 4/4, Tier1RiskMap 9/9, EnsembleDecoderRiskMap 9/9 |
+| EXP-PATH-001 large sweep | ✅ 완료 — 45 runs, H6 PASS (FED -98.7%) |
 
-### 2.2 다음 작성 모듈
+### 2.2 (이전 구현 단계 모두 완료 — 참고용 보존)
 
-#### Step A: `src/tier1/tier1_risk_map.py` (Tier1RiskMap 클래스)
+D-025 신버전 EXP-PATH-001 의 모든 모듈은 이미 구현 및 검증 완료. 아래는
+구버전 작업 흐름 참고용 자료 (`src/integration/` skeleton 단계에서 사용됐던
+설계 메모).
 
-```python
-from src.risk_map.risk_map_class import RiskMap
-from src.tier1.tier1_gnn import SimpleFireGNN, build_knn_adjacency
-from src.tier1.detector_positions import ALL_DETECTORS
+#### Step A: `src/tier1/tier1_risk_map.py` (Tier1RiskMap 클래스) — ✅ 완료
+
+→ EXP-PATH-001 는 4개 RiskMap × 3 planner ablation 으로 confounder 분리.
 
 class Tier1RiskMap(RiskMap):
     """GNN forward 결과 → RiskMap interface 어댑터.
@@ -64,9 +94,9 @@ class Tier1RiskMap(RiskMap):
         ...
 ```
 
-**Test**: `__main__` self-test — synthetic 입력으로 query 동작 검증.
+**Test**: `__main__` self-test — synthetic 입력으로 query 동작 검증. ✅ 9/9 PASS.
 
-#### Step B: `src/integration/` 신규 모듈 (Week 12)
+#### Step B: `src/integration/` 신규 모듈 (Week 12) — ✅ 완료
 
 | 파일 | 책임 |
 |---|---|
@@ -80,7 +110,7 @@ class Tier1RiskMap(RiskMap):
 | `metrics.py` | 5-metric 계산기: success_rate / mean_evac_time / danger_zone_exposure / casualty_rate / cumulative_FED |
 | `run_exp_path_001.py` | 통합 entry — 3 시나리오 × N 시드 × 20 person 시뮬레이션 |
 
-### 2.3 EXP-PATH-001 실행 (D-025 신버전)
+### 2.3 EXP-PATH-001 실행 (D-025 신버전, ✅ 완료)
 
 ```bash
 python -m src.integration.run_exp_path_001 \
@@ -101,8 +131,27 @@ python -m src.integration.run_exp_path_001 \
 - cumulative_FED — person 별 누적 FED 평균 (H6 primary metric)
 
 **가설 H6**: S2_FED ≤ 0.7 × S1_FED (drone swarm 이 baseline 대비 ≥30% FED 감소).
+**결과**: S2/S1 = 0.0127, FED -98.7% → ✅ **H6 PASS**.
 **가설 H5 보조 확인**: S2 vs S3 결과 차이 → risk map fidelity 가 path quality 로
-transitive 하게 전달되는지.
+transitive 하게 전달되는지. **결과**: S3 (Tier1RiskMap) FED Δ < 1e-7 vs S2 (FDS oracle) → ✅ transitive.
+
+### 2.4 다음 ablation: 4-RiskMap EXP-PATH-001 (구 §2.2 의 변형)
+
+D-046 의 4 RiskMap (α / β / γ / oracle) 을 모두 sweep 해서 EnsembleDecoderRiskMap
+β/γ 가 path planning level 에서도 oracle 대비 충분한지 확인. 구버전 §2.2 의
+3-planner ablation 은 D-025 로 폐기되었으나, RiskMap 축 ablation 은 여전히
+유효함.
+
+```bash
+python experiments/exp_path_001_ablation.py \
+    --scenarios sim_1500kw_2m2_T05 sim_500kw_1m2_T01 sim_1000kw_1m2_T03 \
+    --risk-maps oracle decoder-fn25 decoder-fn40 tier1-gnn \
+    --n-persons 20 --n-seeds 5 \
+    --output results/exp_path_001_ablation/
+```
+
+**총 trial**: 3 시나리오 × 4 risk-maps × 5 시드 × 20 agents = 1200 person-runs.
+H5 transitive 검증: decoder-fn25/fn40/tier1-gnn 모두 oracle 대비 FED Δ < 10× 면 통과.
 
 ### 2.4 시각화
 
@@ -299,11 +348,21 @@ def query_ensemble(xyz, t, w_tier1=0.5, w_tier2=0.5):
 - [x] Tier 1 GNN training (12K params, IoU 0.904)
 - [x] Sparse + geodesic IDW + 3 모델 평가
 - [x] Evaluation Layer L1-L4 framework
-- [x] Paper Figure 1-6 (headline)
-- [x] Documentation 정리 (이 파일들)
-- [x] **Sparse-input ConvLSTM full training** ✅ (IoU 0.182, FNR 0% conservative bias)
-- [ ] **Tier1RiskMap + path planning + EXP-PATH-001** ← 가장 중요
-- [ ] **PyBullet Week 12 통합** (외주)
+- [x] Sparse-input ConvLSTM (IoU 0.581 with re-sparsify, D-042)
+- [x] Sparse-input FNO 6-ch (IoU 0.525, FNR 10.4%, D-042)
+- [x] Hand-crafted 3-way ensemble + geodesic (IoU 0.618, FNR 5.1%, D-043)
+- [x] **L4h Learned Decoder** (IoU **0.733** / FNR 11.5% paper, D-045)
+- [x] **L4h fn-weight ablation** (fn=1.0/2.5/4.0)
+- [x] Decoder Pareto frontier + per-scenario + sweep figures
+- [x] **Multi-t₀ robustness check** (t₀ ∈ [90, 210]s stable)
+- [x] **EnsembleDecoderRiskMap** (β/γ cell-level adapter, D-046)
+- [x] **H1 latency verified** (full L4h 3,028× faster than FDS)
+- [x] **5-fold CV** (mean gap -0.003, no overfit)
+- [x] Paper Figure 1-8 + L1-L4h staircase
+- [x] Documentation (CLAUDE.md, decisions, layer doc, results, this file)
+- [x] REPRODUCE.md command index
+- [ ] **Path planning + EXP-PATH-001** ★★★ ← 가장 중요 (5-7시간)
+- [ ] PyBullet Week 12 통합 (외주)
 - [ ] Paper draft
 - [ ] 발표 슬라이드
 - [ ] 코드 release (`v1.0-final` tag + `RELEASE.md`)

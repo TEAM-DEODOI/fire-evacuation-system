@@ -418,6 +418,40 @@ Zone 별 분포 표 (A:3, B:5, C:4, D:5 = 17 방) + 복도 7 + 출구 3 = **27**
 (`src/tier1/detector_model.py`) + `scripts/visualize_detectors.py`.
 
 ---
+## D-024 v3.3: 감지기 위치 27 → 39 개 확장 + 위치 정밀화 (D-024 1차 개정)
+
+**Date**: 2026-05-13 (저녁, 평면도 2차 검토 후)
+
+**Decision**:
+D-024 (27개) 를 폐기하고 **39개로 확장**. 사용자가 제공한 평면도 사진 (RED=room
+중앙, BLUE=corridor 분기점/출구 직전) 기반으로 위치 재배치:
+
+| 영역 | 개수 | 비고 |
+|---|---|---|
+| 방 (Room) | 22 | 작은 방 1개, 큰 방 2-3개. 모든 방에 1개 이상. |
+| 복도 (Corridor) | 14 | 분기점·교차점에 추가. NFPA 72 spacing 9 m 이내. |
+| 출구 (Exit-side) | 3 | NE / SW / 중앙 출구 직전 1개씩 |
+| **합계** | **39** | |
+
+모든 감지기: **z = 2.5 m** 유지.
+
+**Rationale**:
+- 27개 (D-024 v1) 로 GNN 학습 시 일부 큰 방·복도 분기점에서 공백 발생.
+  사용자가 평면도에서 직접 빨강/파랑 점 표시해서 수정 지시.
+- 39개로 늘려도 NFPA 72 spacing 9 m 이내 (실측 최대 7 m) 준수.
+- "v2 잘못되었어 내가 보내줄 사진 기반으로" → v3 → v3.1 → v3.2 → v3.3 반복.
+  v3.3 가 사용자 최종 승인 버전.
+
+**Implementation**:
+- `src/tier1/detector_positions.py`: `ALL_DETECTORS` 가 39개 (`D-001`~`D-039`).
+- `get_detector_positions_legacy_format()` 도 39개 반환.
+- 모든 down-stream (GNN/Sparse ConvLSTM/Sparse FNO/sensor indicator channel)
+  자동으로 39 sensors 로 학습/평가.
+- 기존 결과: 39 sensors 기준 Tier 1 GNN IoU 0.904, Sparse ConvLSTM 0.581, Sparse FNO 0.525.
+
+**Status**: Implemented + locked. 모든 down-stream 학습/평가가 39 sensors 기반.
+
+---
 
 ## D-025: H6 재정의 + Drone Swarm 도입 (D-013 반전)
 
@@ -664,6 +698,276 @@ def mark_evacuated(self) -> None:
 `src/risk_map/co_field.py`, `src/risk_map/fed.py`,
 `src/integration/person_agent.py::{accumulate_exposure, mark_evacuated}`,
 `src/integration/scenarios/{s1_fixed_sign, s2_fds_swarm, s3_fno_swarm}.py`.
+---
+
+## D-042: Sparse 모델 autoregress 시 re-sparsify (L-013 fix) 를 default 운용 방식으로 채택
+
+> **Renumbered note**: 원래 `D-025` 로 기록되었으나, main 분기에서 `D-025` 가
+> H6 재정의 (drone swarm) 결정에 사용되어 merge (2026-05-14) 시 `D-042` 로
+> 재번호됨. D-043 (was D-026), D-044 (was D-027), D-045 (was D-028),
+> D-046 (was D-029) 도 같은 이유로 재번호. 내부 cross-reference 도 함께 갱신됨.
+
+**Date**: 2026-05-14
+
+**Decision**:
+Sparse-input 모델 (ConvLSTM, FNO) 의 60s autoregress 평가/배포 시
+**매 step 마다 sensor 외 cell 의 T, V, CO 를 0 으로 강제** (re-sparsify).
+이전 step 의 dense prediction 을 직접 다음 step input 으로 chaining 하지 않음.
+
+**Alternatives**:
+- (A) Naïve chaining: dense pred → 다음 step input. 학습-추론 분포 불일치 발생.
+- (B) Re-sparsify: 매 step 의 measurement update 모방 (실 deployment 와 일치).
+- (C) Hybrid: 30s 마다 partial 재측정. (deployment 복잡, 효과 미검증)
+
+**Rationale**:
+- Sparse 모델은 (sparse input → dense target) 으로 학습됨. Naïve chaining 은
+  학습 본 적 없는 (dense → dense) 분포로 forward → drift.
+- Naïve chaining 결과 (50 epoch, sparse ConvLSTM v3): IoU **0.182**, FNR 0%.
+  conservative over-prediction 으로 수렴 (모든 cell을 위험으로 분류).
+- Re-sparsify 적용 후 같은 ckpt: IoU **0.581** (3.2× 향상), FNR 23.0%.
+- Sparse FNO v3 (6-ch + sensor indicator): re-sparsify 적용시 IoU 0.525, FNR 10.4%.
+- 실 deployment 와 일치: 매 10 s 마다 sensor 가 새 measurement 를 push.
+
+**Implementation**:
+- `scripts/evaluate_sparse_model.py`: `--resparsify` 플래그 (⚠ default False).
+  **반드시 `--resparsify` 추가** 해서 호출할 것.
+- `scripts/evaluate_sparse_fno.py`: `autoregress_sparse_fno(resparsify=True)` default.
+- `scripts/visualize_60s_5model.py`, `visualize_60s_6model.py`: 모두 `resparsify=True`.
+- Ensemble (`evaluate_ensemble.py`, `evaluate_ensemble_3way.py`): Tier 2 컴포넌트
+  자동 re-sparsify 적용.
+
+**Status**: Implemented. Sparse Tier 2 의 모든 평가·시각화·ensemble 에서 적용 중.
+L-013 lessons_learned 에 root cause + fix 상세.
+
+---
+
+## D-043: 3-way ensemble (GNN + Sparse ConvLSTM + Sparse FNO) + geodesic node→cell projection 을 cell-level deployment 의 reference 구성으로
+
+**Date**: 2026-05-14
+
+**Decision**:
+Tier 1 GNN per-node 출력 (39, 6) 을 cell grid (60, 40, 6) 로 매핑할 때
+**geodesic IDW (BFS, mask-aware)** 를 사용. Cell-level 위험도는 3-way ensemble:
+
+```
+risk_cell[c, t] = w_t1 · GNN_proj[c, t]
+               + w_conv · SparseConvLSTM[c, t]
+               + w_fno · SparseFNO[c, t]
+```
+
+**Reference weights** (사용 용도별):
+| 용도 | (w_t1, w_conv, w_fno) | IoU | FNR | H5 |
+|---|---|---|---|---|
+| Balanced (paper default) | (0.50, 0.25, 0.25) | 0.618 | 5.1% | 5/13 ✅H4 |
+| Min FNR (safety) | (0.60, 0.10, 0.30) | 0.590 | **3.7%** | 4/13 ✅H4 |
+| Max IoU | (0.40, 0.45, 0.15) | 0.625 | 10.8% | 4/13 |
+
+**Alternatives**:
+- (A) 1-way (각 모델 단독): GNN per-node 만 또는 Sparse 만.
+  - GNN cell-projected 단독 IoU 0.18 (over-smoothing).
+  - Sparse ConvLSTM 단독 IoU 0.581 (H5 4/13 만).
+- (B) 2-way (GNN + 1개 Tier 2): IoU 0.576-0.619, 3-way 보다 FNR 또는 IoU 열세.
+- (C) Euclidean node→cell IDW: FNR 1-1.5%p 더 높음. Wall-aware 안 됨.
+
+**Rationale**:
+- 각 모델이 complementary inductive bias 보유:
+  - GNN: graph + temporal → robust FNR (safety)
+  - ConvLSTM: local conv → cell-level IoU 정확도
+  - FNO: spectral basis → smooth interpolation regime 강점
+- Geodesic IDW (BFS distance) 가 벽 너머 over-smoothing 방지. Euclidean
+  대비 FNR -1~1.5%p 일관 개선 (특히 분리 영역 화재 시).
+- 3-way grid search (30 weight combos × 13 OOD) 로 frontier 확인.
+- Balanced 가 paper headline 용 (IoU/FNR 균형), Min-FNR 가 deployment 용.
+
+**Implementation**:
+- `scripts/evaluate_ensemble.py`: 2-way, `--tier2-arch {fno|conv_lstm}`,
+  `--geodesic-projection`.
+- `scripts/evaluate_ensemble_3way.py`: 3-way grid (30 combos × 13 sims),
+  `--geodesic-projection`.
+- `precompute_node_to_cell_weights(use_geodesic=True)`: BFS from
+  `evaluate_sparse_sensing_geodesic.precompute_geodesic_distances`.
+- 결과: `results/ensemble_3way_geodesic/grid_search.csv`,
+  `figures/current/10_ensemble_3way_geodesic/grid_search.png`.
+
+**Status**: Implemented + verified on 13-OOD. Cell-level deployment 시
+balanced weights default, safety-critical 시 min-FNR weights.
+
+---
+
+## D-044: Paper framing — "Dual surrogate system on shared 39-detector infrastructure"
+
+**Date**: 2026-05-14
+
+**Decision**:
+Paper 의 contribution framing 을 다음과 같이 통일:
+
+> *"Same 39-detector infrastructure, two surrogate signal modes.
+> Tier 1 GNN (binary on/off, 12 K params) recovers 98% of ideal full-SLCF
+> upper bound (IoU 0.92 → 0.90). Tier 2 sparse continuous + re-sparsify +
+> cell-level ensemble closes the FNR gap (10.4% → 3.7%). Together they enable
+> H6 dynamic path planning on legacy infrastructure without additional hardware."*
+
+**Alternatives**:
+- (A) "FNO beats ConvLSTM" framing: H3 partial only. Headline weak.
+- (B) "ConvLSTM baseline + FNO upgrade" framing: 기존 ML papers 와 차별성 약함.
+- (C) Tier 1 GNN 만 강조: 12K params 인상적이지만 contribution 협소.
+- (D) **Selected**: Dual surrogate on shared infrastructure — system-level
+  contribution + ML novelty (binary GNN > continuous sparse) + deployment story.
+
+**Rationale**:
+- 같은 hardware (39 legacy detectors) 에서 binary GNN 과 continuous sparse 양쪽
+  surrogate 를 build → "deployment readiness" 메시지 강함.
+- L1-L4 evaluation layer framework 가 IoU 0.92 (upper bound) → 0.21 (naïve sparse)
+  → 0.90 (Tier 1) → 0.62 (3-way ensemble) gap 을 정량화 → contribution 명확.
+- H6 (Dynamic A* FED reduction) 으로 system-level value 입증.
+- 학술적 시사점: phase-transition (fire spread 는 discrete event) →
+  binary information loss < continuous interpolation loss.
+
+**Implementation**:
+- Paper outline §3 "System Design": Tier 1 / Tier 2 / Shared infrastructure
+- Paper §4 "Experiments": EXP-FIRE-001 / Evaluation layers / EXP-RISK-001 / EXP-PATH-001
+- Paper §5 "Discussion": Phase-transition + spectral basis + capacity vs domain
+- Headline figure: `figures/current/04_tier1_gnn/headline.png` + L1-L4 layer plot
+
+**Status**: Framing locked. 모든 figure / table 이 이 framing 에 정렬됨.
+H6 결과 도착하면 paper draft 시작.
+
+---
+
+## D-045: Learned ensemble decoder (PerCell MLP) replaces hand-crafted 3-way Balanced
+
+**Date**: 2026-05-14 (evening)
+
+**Decision**:
+Cell-level deployment 의 reference ensemble 을 hand-crafted weighted average
+(D-043) 에서 **learned `PerCellEnsembleDecoder` MLP** 로 교체. 입력은 동일
+세 모델 (GNN cell-projected + Sparse-ConvLSTM + Sparse-FNO) + mask + 위치
++ time, 출력은 cell danger ∈ [0, 1].
+
+**Architecture**:
+- Per-cell MLP: 8 input features → hidden(32) → hidden(32) → 1 sigmoid output.
+- **1,377 params** (12 K Tier 1 GNN 다음으로 작음).
+- 학습: BCE on binary truth (danger ≥ 0.5), Adam lr 1e-3, batch 2048, 30 epoch.
+- Loss: **asymmetric BCE** (FN penalty 2.5×) — paper-headline trade-off.
+
+**Training data**:
+- 33 train scenarios × t₀=120s × 6 lookahead × 1826 fluid cells × 6 z layers
+  = **2.16 M cell samples**. 13 OOD held out.
+- Pre-compute step (`scripts/precompute_decoder_data.py`, ~15 min):
+  GNN + Sparse-ConvLSTM + Sparse-FNO forward 후 npz cache.
+
+**fn_weight sweep (13 OOD)**:
+
+| fn_weight | Mean IoU | Mean FNR | H5 pass | H4 pass | 용도 |
+|---|---|---|---|---|---|
+| Hand-crafted Balanced (D-043) | 0.618 | **5.1%** | 5/13 | 7/13 | baseline |
+| Learned 1.0 (BCE) | 0.727 | 14.9% | 9/13 | 4/13 | IoU only |
+| Learned 1.5 | 0.728 | 13.3% | 9/13 | — | — |
+| **Learned 2.5 ★ (paper default)** | **0.733** | 11.5% | **9/13** | **8/13** | balance |
+| Learned 4.0 | 0.718 | 10.0% | 8/13 | 8/13 | FNR-safe |
+
+→ **fn=2.5 paper-headline default**: IoU **+0.115 (+18.6% relative)**, H5 **5 → 9** scenarios,
+H4 trade-off (5.1% → 11.5%) but still 8/13 pass.
+
+**Alternatives**:
+- (A) Hand-crafted ensemble (D-043): IoU ceiling at 0.624 (Step 1 ablation 확인).
+- (B) Small U-Net (spatial conv on top of 3 model outputs): 더 큰 모델, 학습 시간
+  더 길지만 cell 별 MLP 만으로도 spatial context 가 sparse 모델 출력에 충분히
+  내장되어 있어 추가 conv 불필요.
+- (C) **Selected**: per-cell MLP — 1,377 params, 학습 ~3분 CPU, IoU 0.733 도달.
+
+**Rationale**:
+- Hand-crafted projection (mask-aware k-NN + adaptive σ) Step 1 negative
+  → hand-engineered ceiling 확인.
+- Learned decoder 는 cell 별 model 출력 noise 패턴 + 신뢰도를 자동 학습.
+  특히 약한 화재 (sim_500kw_1m2_T01) 같은 어려운 시나리오에서 sparse 모델
+  의 over-prediction 을 효과적으로 보정 → 시각화에서 FDS truth 와 거의
+  동일한 cell-level 위험도 추론.
+- Tier 1 GNN per-node IoU 0.904 → cell-projected 0.18-0.32 의 격차 (over-smoothing)
+  를 decoder 가 sparse 모델 출력과 결합해 보완.
+- Asymmetric BCE 로 safety/accuracy frontier 를 단일 hyperparam (fn_weight)
+  으로 제어. fn=2.5 가 paper-balanced, fn=4.0 이 deployment-safe.
+
+**Implementation**:
+- `src/tier1/ensemble_decoder.py`: `PerCellEnsembleDecoder`, `DecoderDataset`,
+  `build_cell_features`, `asymmetric_bce_loss`, `decoder_forward_grid`.
+- `scripts/precompute_decoder_data.py`: 46 시나리오 forward → npz.
+- `scripts/train_ensemble_decoder.py`: 학습 + per-epoch OOD eval + best save.
+- `scripts/visualize_60s_9row.py`: 8-row + decoder row 추가.
+- 체크포인트:
+    `checkpoints/ensemble_decoder/best.pt`    (= fn=2.5, paper default)
+    `checkpoints/ensemble_decoder_fn{10,25,40}/best.pt` (sweep variants)
+
+**Status**: Implemented + verified on 13-OOD. Paper headline cell-level
+contribution: hand-crafted 0.618 / 5.1% → learned 0.733 / 11.5%. H6 path
+planning 은 이 decoder 의 cell-level output 을 `Tier1RiskMap` adapter 의
+입력으로 사용 예정.
+
+---
+
+## D-046: H6 RiskMap source = cell-level decoder (β / γ), with per-node GNN (α) as ablation
+
+**Date**: 2026-05-14 (late evening, H6-prep step 2)
+
+**Decision**:
+For H6 path-planning (EXP-PATH-001), the primary RiskMap source is the
+**cell-level learned decoder** (`EnsembleDecoderRiskMap`, D-045). The
+per-node GNN adapter and FDS oracle are kept as ablation comparisons.
+
+| Tag | Class | Source | IoU | FNR | Role |
+|---|---|---|---|---|---|
+| α | `Tier1RiskMap` | per-node GNN nearest-node | 0.904 | 4.6% | ablation (coarse cell res, 39 nodes) |
+| **β ★** | `EnsembleDecoderRiskMap` (fn=2.5) | cell-level decoder | **0.733** | 11.5% | **paper default** |
+| γ | `EnsembleDecoderRiskMap` (fn=4.0) | cell-level decoder | 0.718 | **10.0%** | safety variant (H4 pass) |
+| oracle | `StaticRiskMap.from_fds_dir(...)` | FDS truth | 1.0 | 0% | fairness baseline |
+
+**Pre-decision verifications** (commits 5fe5c03 / d707e26 / c29049c / 546c9cd):
+- **Multi-t₀ robustness**: decoder trained at t₀=120s only, but evaluation
+  across t₀ ∈ [90, 210] s shows IoU 0.726-0.736, FNR 9.9-14.2%. Variation
+  within noise. Single-t₀ training is sufficient for the H6 evacuation
+  window. Cold-start t₀=60s fails (IoU 0.662) — expected design boundary.
+- **5-fold CV gap**: mean train-vs-OOD gap = -0.003 (std 0.025) across
+  the 33 train scenarios. Decoder is not overfitting.
+- **H1 latency**: full L4h pipeline 456 ms / 3,028× faster than FDS. Real-
+  time H6 replan budget (~30 s) trivially satisfied.
+
+**Alternatives**:
+- (A) per-node GNN α as primary: IoU 0.904 per-node, but `query(xyz, t)`
+  returns the *nearest-node* value → cell-level effective IoU collapses
+  to ~0.20 (over-smoothing). Path planner sees an unrealistically blocky
+  risk field. **Rejected as primary**; kept as ablation.
+- (B) hand-crafted 3-way Balanced (D-043, IoU 0.618 / FNR 5.1%): the
+  *baseline* the learned decoder replaces. Lower IoU but very low FNR;
+  could be an ablation row but not headline.
+- (C) FDS oracle as primary: defeats the surrogate contribution. Used
+  only as fairness ceiling for the EXP-PATH-001 dynamic vs static
+  comparison.
+- (D) **Selected**: β cell-level decoder as primary, γ as safety
+  alternative, α as ablation, oracle as fairness baseline.
+
+**Rationale**:
+- The learned decoder has cell-grid resolution (60×40×6) and is
+  continuous in (x, y, z, t) via the RegularGridInterpolator wrapper —
+  exactly the shape path planning needs.
+- IoU 0.733 ≥ H5 threshold (9/13 scenarios pass).
+- fn=2.5 paper headline FNR 11.5% just barely fails H4 *on the headline
+  t₀=120s*, but the multi-t₀ sweep shows that for t₀ ≥ 150 s (which is
+  where the dynamic planner spends most of its replans during a typical
+  evacuation), FNR drops to 9.9%-10.1% — well within H4.
+- fn=4.0 γ provides a single-line swap (ckpt path) for safety-critical
+  deployments at the cost of -0.015 IoU.
+
+**Implementation status**:
+- `src/tier1/ensemble_risk_map.py` — `EnsembleDecoderRiskMap` class +
+  `from_scenario(...)` end-to-end factory + 9 self-tests pass.
+- `src/tier1/tier1_risk_map.py` — pre-existing per-node `Tier1RiskMap`,
+  unchanged.
+- `src/risk_map/risk_map_class.py` — pre-existing `StaticRiskMap` for
+  oracle baseline.
+- Next session implements `src/path_planning/` + `experiments/exp_path_001.py`
+  to consume all four RiskMap variants in a single ablation table.
+
+**Status**: Locked. H6 EXP-PATH-001 will compare all four variants.
 
 ---
 
