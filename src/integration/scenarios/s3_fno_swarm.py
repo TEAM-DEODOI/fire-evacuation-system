@@ -36,22 +36,28 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 
+from src.integration.drone_swarm import DroneSwarm, DroneSwarmConfig, DroneAgentConfig
 from src.integration.metrics import ScenarioMetrics
 from src.integration.recorder import SimulationRecorder
 from src.integration.scene import Scene, SceneConfig
+from src.integration.person_agent import PersonStatus
 from src.integration.scenarios._common import (
     BUILDING_URDF,
     PLACEHOLDER_URDF,
     building_urdf_path,
     exit_positions,
+    load_truth_co_field,
     load_truth_risk_map,
     spawn_agents,
 )
-from src.path_planning.building_graph import load_default_fluid_mask
+from src.path_planning.building_graph import (
+    load_default_fluid_mask,
+    load_interior_mask,
+)
 from src.path_planning.edge_weights import EdgeWeightConfig
 from src.path_planning.planners import EvacuationPlanner
 from src.risk_map.risk_map_class import RiskMap
-from src.shared.constants import DT_SLCF, REPLAN_PERIOD_S
+from src.shared.constants import CELL_SIZE_M, DT_SLCF, REPLAN_PERIOD_S
 from src.tier1.detector_positions import ALL_DETECTORS
 from src.tier1.tier1_gnn import N_NODES, SimpleFireGNN, build_knn_adjacency
 from src.tier1.tier1_risk_map import Tier1RiskMap
@@ -207,6 +213,7 @@ def run(
     t_end_s: float = 300.0,
     dt_s: float = 1.0,
     replan_period_s: float = REPLAN_PERIOD_S,
+    t_start_s: float = 0.0,
     *,
     recorder: Optional[SimulationRecorder] = None,
 ) -> ScenarioMetrics:
@@ -237,7 +244,7 @@ def run(
         FileNotFoundError: If ``assets/placeholder_building.urdf`` is
             missing.
     """
-    del fno_checkpoint, dataset_path, n_drones  # M5-mini: not used.
+    del fno_checkpoint, dataset_path  # M5-mini: not used.
 
     urdf = building_urdf_path()
     if not urdf.exists():
@@ -256,104 +263,156 @@ def run(
     scene = Scene.create(cfg)
     try:
         fluid_mask = load_default_fluid_mask()
+        interior_mask = load_interior_mask()
         truth_rm = load_truth_risk_map(fds_dir, verbose=True)
+        truth_co = load_truth_co_field(fds_dir, verbose=True)
         planner_rm = _load_tier1_planner_rm(
             fire_scenario_id, fall_back=truth_rm, verbose=True
         )
         exits_xyz = exit_positions()
-        agents = spawn_agents(scene, n_persons, seed, fluid_mask=fluid_mask)
+        agents = spawn_agents(
+            scene, n_persons, seed,
+            fluid_mask=fluid_mask,
+            interior_mask=interior_mask,
+        )
         n_actual = len(agents)
 
+        # D-040: pure risk-based weighting (see S2). S3's planner_rm is
+        # the model RiskMap, so the planner consults the model only —
+        # no truth CO leakage, no proxy.
         planner = EvacuationPlanner(
             _building_graph(),
             config=EdgeWeightConfig(
                 base_cost=1.0,
                 risk_scale=10.0,
-                risk_threshold=0.95,
+                risk_threshold=1.0,
                 n_samples=5,
             ),
             heuristic="euclidean",
             fallback_to_last=True,
         )
 
-        paths: Dict[str, List[np.ndarray]] = {}
-        wp_idx: Dict[str, int] = {}
-        last_replan_t: Dict[str, float] = {a.agent_id: -math.inf for a in agents}
+        # Drone swarm. Identical to S2 EXCEPT the planner_rm is the
+        # MODEL RiskMap (Tier1 GNN by default), not FDS truth. The
+        # occupant still feels the FDS truth (truth_rm, truth_co).
+        swarm = DroneSwarm(
+            config=DroneSwarmConfig(
+                n_drones=int(n_drones),
+                drone=DroneAgentConfig(
+                    replan_period_s=float(replan_period_s),
+                ),
+            ),
+        )
+        spawn_seeds = [
+            exits_xyz[i % len(exits_xyz)].copy() for i in range(int(n_drones))
+        ]
+        swarm.spawn(spawn_xyzs=spawn_seeds, interior_mask=interior_mask)
+
         arrived: Dict[str, float] = {}
+        died_at: Dict[str, float] = {}
         exposure_s: Dict[str, float] = {a.agent_id: 0.0 for a in agents}
 
-        # Initial plan against the PLANNER's (model) RiskMap.
-        for a in agents:
-            initial_path = planner.plan(a.position, planner_rm, t=0.0)
-            paths[a.agent_id] = initial_path
-            wp_idx[a.agent_id] = 1 if len(initial_path) > 1 else 0
-            last_replan_t[a.agent_id] = 0.0
-
-        max_steps = int(math.ceil(t_end_s / dt_s)) + 5
-        WP_TOLERANCE_M = 1.0
+        # D-034: dual timelines (see s1/s2 for full comment).
+        duration_s = max(0.0, float(t_end_s) - float(t_start_s))
+        max_steps = int(math.ceil(duration_s / dt_s)) + 5
         DANGER_THRESHOLD = 0.5
 
         for _ in range(max_steps):
-            t_now = float(scene.t)
-            if t_now >= t_end_s:
+            t_sim = float(scene.t)
+            if t_sim >= duration_s:
                 break
+            t_fire = t_sim + float(t_start_s)
 
+            # 1. Swarm advances using the MODEL RiskMap (planner_rm).
+            #    D-040: risk-only planner — no CO field passed, so the
+            #    swarm consults the model RiskMap exclusively (no truth
+            #    leakage).
+            swarm.update(
+                t=t_fire,
+                dt_s=float(dt_s),
+                persons=agents,
+                planner_rm=planner_rm,
+                planner=planner,
+                interior_mask=interior_mask,
+                exits=exits_xyz,
+            )
+
+            # 2. Each ALIVE person scans for a GUIDING drone in sight
+            #    and walks via self path planning (D-032). D-037 fallback:
+            #    when no drone is in sight, behave like S1 (risk-blind
+            #    nearest exit) so the occupant never just stands still.
             for agent in agents:
-                if agent.agent_id in arrived:
+                if agent.status != PersonStatus.ALIVE:
                     continue
-
-                # Replan against the PLANNER risk map.
-                if (t_now - last_replan_t[agent.agent_id]) >= replan_period_s:
-                    new_path = planner.replan(
-                        agent.position, planner_rm, t=t_now
+                target_drone = agent.scan_for_drones(swarm.drones)
+                if target_drone is not None:
+                    waypoint = np.array([
+                        target_drone.position[0],
+                        target_drone.position[1],
+                        agent.position[2],
+                    ], dtype=np.float64)
+                else:
+                    waypoint = min(
+                        exits_xyz,
+                        key=lambda ex, _p=agent.position: float(
+                            np.linalg.norm(np.asarray(ex)[:2] - _p[:2])
+                        ),
                     )
-                    if new_path:
-                        paths[agent.agent_id] = new_path
-                        wp_idx[agent.agent_id] = 1 if len(new_path) > 1 else 0
-                    last_replan_t[agent.agent_id] = t_now
+                    waypoint = np.array([
+                        waypoint[0], waypoint[1], agent.position[2],
+                    ], dtype=np.float64)
+                tgt_cell = (
+                    int(waypoint[0] / CELL_SIZE_M),
+                    int(waypoint[1] / CELL_SIZE_M),
+                )
+                if (
+                    not agent.nav_path
+                    or agent.last_path_target_cell != tgt_cell
+                    or (t_sim - agent.last_path_replan_t)
+                    >= agent.config.path_replan_period_s
+                ):
+                    agent.replan_path_to(waypoint, fluid_mask, t=t_sim)
+                agent.step_along_path(scene.client, dt_s, fluid_mask)
 
-                path = paths[agent.agent_id]
-                idx = wp_idx[agent.agent_id]
-                if path and idx < len(path):
-                    wp = path[idx]
-                    agent.step_toward(
-                        scene.client,
-                        wp,
-                        dt_s,
-                        fluid_mask=fluid_mask,
-                    )
-                    if (
-                        float(np.linalg.norm(agent.position[:2] - wp[:2]))
-                        <= WP_TOLERANCE_M
-                    ):
-                        wp_idx[agent.agent_id] = idx + 1
-
-                # Exposure measured against TRUTH (fairness).
-                danger = float(truth_rm.query(agent.position, t=t_now))
+                # 3. Truth-sampled danger + CO using the FIRE clock.
+                danger = float(truth_rm.query(agent.position, t=t_fire))
+                co_ppm = float(truth_co.query(agent.position, t=t_fire))
                 if danger > DANGER_THRESHOLD:
                     exposure_s[agent.agent_id] += float(dt_s)
+
+                died = agent.accumulate_exposure(
+                    experienced_co_ppm=co_ppm,
+                    experienced_danger=danger,
+                    dt_s=float(dt_s),
+                )
+                if died:
+                    died_at[agent.agent_id] = t_sim
+                    continue
 
                 for ex in exits_xyz:
                     if (
                         float(np.linalg.norm(agent.position[:2] - ex[:2]))
                         <= agent.config.arrival_tolerance_m
                     ):
-                        arrived[agent.agent_id] = t_now
+                        arrived[agent.agent_id] = t_sim
+                        agent.mark_evacuated()
                         break
 
-            # Optional recording (decoupled, no-op if recorder is None).
             if recorder is not None:
                 recorder.record(
-                    t=t_now,
+                    t=t_fire,
                     agents=agents,
                     risk_map=truth_rm,
                     arrived=set(arrived.keys()),
+                    drones=swarm.drones,
                     agent_extras_fn=lambda a, _es=exposure_s: {
                         "exposure_s": _es.get(a.agent_id, 0.0),
+                        "cumulative_fed": float(a.cumulative_fed),
+                        "following_drone_id": a.following_drone_id,
                     },
                 )
             scene.step()
-            if len(arrived) == n_actual:
+            if len(arrived) + len(died_at) == n_actual:
                 break
 
         success_rate = (len(arrived) / n_actual) if n_actual else 0.0
@@ -364,6 +423,11 @@ def run(
         mean_exposure = (
             float(np.mean(list(exposure_s.values()))) if exposure_s else 0.0
         )
+        casualty_rate = (len(died_at) / n_actual) if n_actual else 0.0
+        feds = np.asarray([a.cumulative_fed for a in agents], dtype=np.float64)
+        mean_fed = float(feds.mean()) if feds.size else 0.0
+        max_fed = float(feds.max()) if feds.size else 0.0
+        p90_fed = float(np.percentile(feds, 90)) if feds.size else 0.0
 
         return ScenarioMetrics(
             scenario_id="S3_fno_swarm",   # canonical name per CLAUDE.md
@@ -373,8 +437,10 @@ def run(
             evacuation_success_rate=success_rate,
             mean_evacuation_time_s=mean_evac_time,
             danger_zone_exposure_time_s=mean_exposure,
-            casualty_rate=0.0,
-            cumulative_fed=0.0,
+            casualty_rate=casualty_rate,
+            cumulative_fed=mean_fed,
+            max_cumulative_fed=max_fed,
+            p90_cumulative_fed=p90_fed,
         )
     finally:
         scene.close()

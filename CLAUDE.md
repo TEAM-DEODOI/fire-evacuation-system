@@ -542,15 +542,32 @@ figures/           — paper/slide figures
     (`s1_fixed_sign` M3-α, `s2_fds_swarm` M4-mini, `s3_fno_swarm` M5-mini)
   - Skeleton: `drone_swarm.py` (Crazyflie + Boids/APF: M4-full), full STL→URDF
     in `urdf_builder.build_building_urdf` (trimesh 미설치: M1-full)
-- **EXP-PATH-001 mini-sweep 완료** —
-  `results/exp_path_001/comparison.csv` (27 rows = 3 fires × 3 seeds × 3 scenarios,
-  5 agents each, placeholder building) + `figures/exp_path_001/comparison.png`
-  - S1 fixed-sign: evac 80.0% (σ=0), exposure 0s, t_evac 4.5s
-  - S2 FDS swarm:  evac 93.3% (σ=0.1), exposure 0.36s (max 2.8s), t_evac 17.4s
-  - S3 model swarm (Tier1RiskMap): **identical to S2 in 9/9 rows** — H5
-    transitive 1차 확인
-  - H6 trade-off 시각화됨: drone swarm 이 +13.3 %p 더 구조하지만 +12.9 s
-    더 길고 +0.36 s exposure 증가 (small placeholder building, FED 미활성)
+- **`interior_mask` 도입 (D-028, 2026-05-14)** — fluid mask 만으로
+  PersonAgent 가 건물 외부에 spawn 되는 버그 (L-016) 를 해결. 46 FDS
+  시나리오의 final-frame `risk > 0.6` cell 의 union (∩ fluid mask) 을
+  `data/processed/interior_mask.npz` 에 저장; z=3 에 701 spawnable cells.
+  `scripts/build_interior_mask.py` + `scripts/visualize_interior_mask.py`
+  + `scripts/sweep_interior_threshold.py` 로 재생성 / 진단 가능.
+- **PersonAgent FED 활성화 — M2-full + M3-full 완료 (D-029, 2026-05-14)** —
+  새 `StaticCOField` (`src/risk_map/co_field.py`) 가 raw CO ppm grid 를
+  query 하고, `PersonAgent.accumulate_exposure(co, danger, dt)` 가
+  ISO 13571 §7.3 simplified FED 를 누적 + `DEAD` 전이. 3 시나리오
+  step loop 모두 통합. CO 캐시 `results/cache/scenario_co_fields/`.
+- **EXP-PATH-001 large sweep 완료 (D-025 default scale)** —
+  `results/exp_path_001/comparison.csv` (45 rows = 3 fires × 5 seeds × 3 scenarios,
+  **20 agents each × 300 s**, 실 STL 빌딩) +
+  `figures/exp_path_001/comparison.png`
+  - S1 fixed-sign: evac 54.7% (40-65% spread), 1500kW exposure 55-96s,
+    FED mean 0.0018 (max 0.0043)
+  - S2 FDS swarm:  evac 100.0% (15/15 rows), exposure ≤ 0.9s, t_evac ~11.4s,
+    FED mean 0.0000230
+  - S3 model swarm (Tier1RiskMap): S2 와 거의 동일 (FED Δ < 1e-7,
+    H5 transitive 유지)
+  - **H6 PASS**: FED ratio S2/S1 = 0.0127 (S2 가 S1 대비 **-98.7%**,
+    목표 ≤ 0.7 충족). +45.3%p evac + exposure -24.5s 동반.
+  - casualty_rate=0 (300 s 에서도 FED 0.3 threshold 미도달; 작은 빌딩
+    + dt_SLCF=10s 기반 보간된 CO ppm 이 ~100-500 ppm 수준이라 그 시간
+    안에 누적 부족. **H6 primary metric 은 통과** 했으므로 sufficient.).
 
 **Hypothesis state (2026-05-14)**:
 - H1 ✅ — 52,000× speedup (GNN ~26 ms vs FDS ~23 min)
@@ -559,10 +576,10 @@ figures/           — paper/slide figures
   에서 FNO no-PI + geodesic 이 ConvLSTM 우위
 - H4 ✅ — Tier 1 GNN FNR 4.6%
 - H5 ✅ — Tier 1 GNN IoU 0.904 (13/13 OOD); EXP-PATH-001 mini-sweep 에서
-  path-level transitive 1차 확인 (S3 ≡ S2 in 9/9 rows)
-- H6 ⚠ partial — pipeline 가동 (27-row comparison.csv 산출), success-rate /
-  exposure 측면 trade-off 정량화. **primary metric (FED ≥ 30% 감소) 은
-  M2-full + M3-full 의존**: PersonAgent CO-FED accumulator + raw CO grid load
+  path-level transitive 유지 (S3 FED Δ from S2 < 1e-7)
+- **H6 ✅ — drone swarm 이 fixed sign 대비 FED -98.7%** (목표 ≥ 30%
+  감소 충족). 20-agent × 300 s × 5 seeds × 3 fires = 45 runs.
+  S1 mean FED 0.00181 vs S2 0.0000230, ratio 0.0127.
 
 **Plan B activated** (paper reframing):
 > 단일 39-detector 인프라 위에서 binary signal + 12K-param GNN 이
@@ -580,6 +597,18 @@ figures/           — paper/slide figures
   EXP-PATH-001 을 3 PyBullet 시나리오 비교 (S1 fixed-sign / S2 FDS swarm /
   S3 model swarm) 로 전환, 5-metric (evac_success_rate / mean_evac_time /
   danger_zone_exposure / casualty_rate / cumulative_FED)
+- **D-026 (2026-05-14): Path-planning graph = fluid-cell grid (60×40×6)** —
+  building.py 19-node 그래프 폐기, FDS fluid mask 에서 파생된 cell grid
+  로 통일 (`src/path_planning/building_graph.py::build_graph`).
+- **D-028 (2026-05-14): spawn pool = `interior_mask`** — fluid mask 대신
+  46 FDS 시나리오 final-frame `risk>0.6` union ∩ fluid 를 사용
+  (`scripts/build_interior_mask.py`, `data/processed/interior_mask.npz`).
+  사용자 통찰: open space 는 연기 분산으로 risk 누적 안 됨 → high-risk
+  cell = 내부.
+- **D-029 (2026-05-14): PersonAgent FED 활성화 (M2-full + M3-full)** —
+  새 `StaticCOField` 클래스로 raw CO ppm 을 query, `accumulate_exposure`
+  메서드가 ISO 13571 FED 누적 + `DEAD` 전이. EXP-PATH-001 의 H6 primary
+  metric 측정 가능 → **H6 PASS** (FED -98.8%).
 
 **Recent lessons** (`docs/lessons_learned.md`):
 - L-014: conda-forge pybullet 설치가 pip numpy 를 깨뜨림 — 결정적 복구 절차
@@ -587,26 +616,31 @@ figures/           — paper/slide figures
   --no-deps numpy==1.26.4`)
 - L-015: PyBullet `getContactPoints` 가 mass=0 body 끼리 비어 있음 →
   `getClosestPoints(distance=0.0)` 사용 (kinematic agent + 정적 obstacle)
+- L-016: fluid mask 만으로는 PersonAgent 가 건물 외부 (open courtyard /
+  외부 yard / building 사이 strip) 에 spawn — open door 로 외부 fluid 와
+  내부 fluid 가 단일 component 로 묶여 `only_exit_reachable` 필터 무효.
+  `interior_mask` (FDS final-frame `risk>0.6` union ∩ fluid) 로 해결.
+- L-017: `StaticRiskMap` 은 T/V/CO aggregated danger 만 보유 — FED 누적
+  엔 raw CO ppm 이 필요. 별도 `StaticCOField` 클래스 도입 (대칭 API +
+  OOB 시 0 ppm safe default). RiskMap 의 abstraction 보존.
 
 **Next priority** (`docs/90_next_steps.md`):
-1. ★★★ **M2-full + M3-full (FED 활성화)** — PersonAgent 의 status machine
-   (alive→dead) + CO-FED accumulator + 시나리오 runner 의 raw CO grid 로드.
-   완료 시 EXP-PATH-001 의 H6 primary metric 측정 가능.
-2. ★★ **A2 (trimesh + 실 STL → URDF)** — `assets/science_hall_lv5.stl`
-   (48 KB, on disk) → URDF. 실 building 으로 전환 → 20-person 확장 가능 +
-   placeholder 의 partition 비현실성 제거.
-3. ★ M4-full Crazyflie URDF + drone-swarm 실제 비행 (현재는 guidance
-   로직만 동작; 시각화·외주 spec 갱신과 함께)
-4. ★ Tier 1 GNN inference time 정확 측정 (H1 수치 확정)
-5. ★ M5-full 실제 FNORiskMap (현재 S3 는 Tier1RiskMap 으로 substitute)
-6. ★ Paper draft + 발표 슬라이드 (`figures/exp_path_001/comparison.png` 가
-   Figure 4.4 first draft)
+1. ★★★ **Paper draft + 발표 슬라이드** — H6 PASS 확정 (large sweep 45
+   runs). Figure 4.4 (`figures/exp_path_001/comparison.png`) 가 primary
+   visual. H1/H2/H4/H5/H6 모두 PASS, paper 본격 진입 가능.
+2. ★★ M4-full Crazyflie URDF + drone-swarm 실제 비행 — 현재 guidance
+   로직만 동작; 시각화 임팩트 + 발표 영상 자료용.
+3. ★ Tier 1 GNN inference time 정확 측정 (H1 수치 확정 — 현재 CLAUDE.md
+   "52,000×" 는 추정값).
+4. ★ M5-full 실제 FNORiskMap (현재 S3 는 Tier1RiskMap substitute) —
+   진짜 PI-FNO 와 Tier1 둘 다 H5 transitive 통과시키는지 확인.
+5. ★ A2 (trimesh + 실 STL → URDF) — 이미 완료 (`assets/building.urdf`),
+   별도 작업 없음.
 
 **Active blockers**:
-- **PyBullet 본 실험 FED metric 미활성** — H6 primary metric 측정 불가.
-  M2-full (PersonAgent CO-FED 누적기) + M3-full (CO grid load) 가 prerequisite.
-- (이전: path planning + Tier1RiskMap → 해소)
-- (이전: val/ood → Member A T01–T05 도착 후 해소)
+- (모두 해소) FED activation, path planning, Tier1RiskMap, val/ood,
+  interior spawn — 전부 closed. H1/H2/H3-partial/H4/H5/H6 hypothesis state
+  안정화 + paper 단계 진입 준비 완료.
 
 ---
 

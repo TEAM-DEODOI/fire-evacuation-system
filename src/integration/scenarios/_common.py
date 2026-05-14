@@ -31,7 +31,9 @@ from src.path_planning.building_graph import (
     exit_nodes,
     fluid_cells_at,
     load_default_fluid_mask,
+    load_interior_mask,
 )
+from src.risk_map.co_field import StaticCOField
 from src.risk_map.risk_map_class import RiskMap, StaticRiskMap
 from src.shared.constants import CELL_SIZE_M, DT_SLCF, GRID_SHAPE, N_TIMESTEPS
 
@@ -54,6 +56,7 @@ prefer :data:`BUILDING_URDF`.
 """
 
 CACHE_DIR: Path = Path("results/cache/scenario_risk_maps")
+CO_CACHE_DIR: Path = Path("results/cache/scenario_co_fields")
 
 
 def building_urdf_path(prefer_real: bool = True) -> Path:
@@ -150,6 +153,89 @@ def load_truth_risk_map(fds_dir: Path, verbose: bool = True) -> RiskMap:
     return rm
 
 
+def zero_co_field() -> StaticCOField:
+    """All-zero CO field. Used as the fallback when no FDS scenario loads.
+
+    With this field, :func:`src.risk_map.fed.accumulate_fed_co` returns 0
+    for every step, so ``casualty_rate`` and ``cumulative_fed`` stay
+    flat — matching the previous behaviour of S1/S2/S3 before CO was
+    wired in.
+    """
+    nx_, ny_, nz_ = GRID_SHAPE
+    times = np.arange(0.0, N_TIMESTEPS * DT_SLCF, DT_SLCF)
+    return StaticCOField(
+        co_array=np.zeros((N_TIMESTEPS, nx_, ny_, nz_), dtype=np.float32),
+        times=times,
+    )
+
+
+def load_truth_co_field(fds_dir: Path, verbose: bool = True) -> StaticCOField:
+    """Build (or load from cache) the FDS raw-CO field for FED accumulation.
+
+    Mirrors :func:`load_truth_risk_map`: tries the npz cache first under
+    ``CO_CACHE_DIR / <fds_dir.name>.npz``; falls back to building from
+    FDS slices (~30 s) and writes the cache. On any failure returns the
+    zero CO field so the scenario still completes — exposure / FED will
+    just remain 0 for that run, with a clear stdout warning.
+
+    Args:
+        fds_dir: Path to the FDS scenario directory.
+        verbose: Print progress / cache hits.
+
+    Returns:
+        A :class:`StaticCOField` (either FDS-truth or zero fallback).
+    """
+    cache_key = fds_dir.name if fds_dir.name else "_unnamed"
+    cache_path = CO_CACHE_DIR / f"{cache_key}.npz"
+
+    if cache_path.exists():
+        try:
+            if verbose:
+                print(f"  [co_field] cache hit: {cache_path}")
+            return StaticCOField.from_npy(cache_path)
+        except Exception as exc:  # noqa: BLE001
+            if verbose:
+                print(
+                    f"  [co_field] cache read failed ({cache_path}): {exc}; "
+                    f"re-loading from FDS"
+                )
+
+    if not fds_dir.exists():
+        if verbose:
+            print(
+                f"  [co_field] FDS dir missing ({fds_dir}); "
+                f"falling back to zero CO"
+            )
+        return zero_co_field()
+
+    try:
+        if verbose:
+            print(
+                f"  [co_field] loading FDS CO field from {fds_dir} "
+                f"(first call: ~30 s)"
+            )
+        cf = StaticCOField.from_fds_dir(fds_dir)
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            print(
+                f"  [co_field] FDS load failed "
+                f"({exc.__class__.__name__}: {exc}); falling back to zero CO"
+            )
+        return zero_co_field()
+
+    try:
+        CO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cf.save(cache_path)
+        if verbose:
+            size_kb = cache_path.stat().st_size / 1024
+            print(f"  [co_field] cached -> {cache_path} ({size_kb:.0f} KB)")
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            print(f"  [co_field] cache write failed: {exc}")
+
+    return cf
+
+
 # ─── Graph + agents helpers ───────────────────────────────────────────────
 def exit_positions() -> List[np.ndarray]:
     """All exit-node positions as (3,) world arrays at breathing height."""
@@ -167,37 +253,49 @@ def spawn_agents(
     *,
     fluid_mask: Optional[np.ndarray] = None,
     only_exit_reachable: bool = True,
+    interior_mask: Optional[np.ndarray] = None,
 ) -> List[PersonAgent]:
-    """Spawn agents at random fluid cells inside the building (D-026).
+    """Spawn agents at random *indoor* cells (D-026 cell grid).
 
-    Samples uniformly from the set of fluid cells at the breathing-zone
-    z-layer (``k=3``). When ``only_exit_reachable`` (default) the pool
-    is restricted to the connected component containing the three exit
-    cells, so every spawned agent has at least one viable path to an
-    exit. The agent's XY is jittered uniformly within
-    ``±(CELL_SIZE_M/2 - capsule_radius)`` of the cell centre so the
-    capsule stays inside the chosen cell.
+    The spawn pool is the breathing-zone (``k=3``) slice of the
+    **interior mask** — the union of cells reached by FDS smoke across
+    all scenarios, ANDed with the fluid mask. This excludes outdoor
+    fluid cells (open courtyard, building exterior) that the raw fluid
+    mask alone would allow. When ``only_exit_reachable`` (default) the
+    pool is further restricted to the connected component containing
+    the three exit cells. The agent's XY is jittered uniformly within
+    ``±max_jitter`` of the cell centre so the capsule stays inside the
+    chosen cell.
 
     Args:
         scene: Active :class:`Scene`.
-        n_persons: Max agents to spawn (capped at fluid-cell count).
+        n_persons: Max agents to spawn (capped at indoor-cell count).
         seed: RNG seed for cell selection and jitter.
         fluid_mask: ``(60, 40, 6)`` boolean mask. Loaded from
-            ``data/processed/dataset.h5`` when ``None``.
+            ``data/processed/dataset.h5`` when ``None``. Still used to
+            build the connectivity graph for exit-reachability.
         only_exit_reachable: If ``True``, restrict the spawn pool to
             cells in the same connected component as the 3 exits.
+        interior_mask: ``(60, 40, 6)`` boolean indoor mask. Loaded from
+            ``data/processed/interior_mask.npz`` when ``None``.
 
     Returns:
         List of :class:`PersonAgent`.
 
     Raises:
-        RuntimeError: If no fluid cells are available.
+        RuntimeError: If no indoor cells are available.
     """
     if fluid_mask is None:
         fluid_mask = load_default_fluid_mask()
-    cells = fluid_cells_at(fluid_mask, z_layer=3)
+    if interior_mask is None:
+        interior_mask = load_interior_mask()
+
+    # Spawn pool: indoor fluid cells at the breathing-zone z-slice.
+    layer = interior_mask[:, :, 3]
+    cells = [(i, j) for i in range(layer.shape[0])
+             for j in range(layer.shape[1]) if layer[i, j]]
     if not cells:
-        raise RuntimeError("no fluid cells available for spawn")
+        raise RuntimeError("no indoor cells available for spawn")
 
     if only_exit_reachable:
         import networkx as nx
@@ -206,7 +304,13 @@ def spawn_agents(
         if exit_ids:
             exit_component = nx.node_connected_component(graph, exit_ids[0])
             if all(e in exit_component for e in exit_ids):
-                cells = [(i, j) for (i, j, _k) in exit_component]
+                reachable = {(i, j) for (i, j, _k) in exit_component}
+                cells = [c for c in cells if c in reachable]
+                if not cells:
+                    raise RuntimeError(
+                        "no indoor cells are exit-reachable; "
+                        "check interior_mask coverage"
+                    )
 
     rng = np.random.default_rng(seed)
     n = min(n_persons, len(cells))

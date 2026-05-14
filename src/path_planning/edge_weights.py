@@ -24,42 +24,86 @@ from typing import Tuple
 import networkx as nx
 import numpy as np
 
+from src.risk_map.co_field import StaticCOField
 from src.risk_map.risk_map_class import RiskMap
+from src.shared.constants import TENABILITY
 
 
 # ─── Config ────────────────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class EdgeWeightConfig:
-    """Edge-weight hyperparameters.
+    """Edge-weight hyperparameters (D-039, 2026-05-14: FED-based mode).
 
-    Defaults reproduce ``configs/path_planning.yaml::edge_weights``. They
-    are intentionally redundant with the YAML so any caller can rely on
-    the dataclass without parsing config.
+    The weight of an edge ``(u, v)`` is::
+
+        weight = base_cost · length
+                 + fed_scale · mean_co_ppm · traversal_time_s
+                                   / (60 · TENABILITY.FED_REFERENCE)
+                 + risk_scale · mean_risk      (legacy, optional)
+
+    The FED term is the projected ISO 13571 §7.3 *simplified* CO-FED
+    contribution of crossing that edge at ``walking_speed_mps``. Summed
+    along an A* path it equals the predicted cumulative FED for an
+    occupant walking that path — so the cost-minimising A* directly
+    minimises predicted FED, the H6 primary metric.
+
+    ``risk_scale`` and ``risk_threshold`` are kept for backwards
+    compatibility with the legacy risk-only weighting. The default
+    config zeroes ``risk_scale`` and sets ``risk_threshold = 1.0`` so the
+    legacy hard cutoff is disabled (no cell is "impassable" — the planner
+    instead reasons about cumulative FED).
 
     Attributes:
-        base_cost: Multiplier on edge ``length`` (m). ``1.0`` → weight in
-            time-equivalent units when divided by walking speed.
-        risk_scale: Multiplier on the mean risk along the edge. Larger
-            values make A* more averse to dangerous corridors.
-        risk_threshold: Edges whose mean risk exceeds this are marked
-            impassable.
-        n_samples: Number of equally-spaced points (including both
-            endpoints) used to integrate risk along the edge.
+        base_cost: Multiplier on edge ``length`` (m). Acts as a small
+            distance tie-breaker so length minimisation still works
+            when CO is zero everywhere.
+        fed_scale: Multiplier on the predicted FED contribution of the
+            edge. ``1.0`` keeps FED in its physical units (the path-sum
+            equals the predicted FED in absolute terms). Set higher to
+            make the planner more averse to smoke-filled cells.
+        walking_speed_mps: Assumed occupant walking speed (m/s) when
+            converting edge length into traversal time. Defaults to
+            :class:`~src.integration.person_agent.PersonAgentConfig` 's
+            walking_speed_mps (0.5 m/s as of D-034).
+        risk_scale: Multiplier on the mean risk along the edge (legacy
+            mode). Default 0 disables. Useful when no CO field is
+            available — the planner falls back to risk-based weighting.
+        risk_threshold: Legacy hard-cutoff threshold. Default 1.0 means
+            "no cutoff". Older callers can still pass a stricter value.
+        n_samples: Reserved for backward compatibility (the cell-grid
+            average uses 2 endpoints always; multi-sample integration
+            is no longer used).
     """
 
     base_cost: float = 1.0
+    fed_scale: float = 0.0
+    walking_speed_mps: float = 0.5
     risk_scale: float = 10.0
-    risk_threshold: float = 0.9
+    risk_threshold: float = 1.0
     n_samples: int = 5
+    # Default mode (D-040, 2026-05-14): pure RISK-based weighting.
+    # weight = base_cost · length + risk_scale · edge_risk
+    # No FED term (avoids needing a model-side CO field) and no hard
+    # cutoff (risk_threshold=1.0 keeps every edge). The planner picks
+    # the path with minimum cumulative risk, which is the right
+    # objective when the only available signal is each scenario's own
+    # risk_map (truth for S2, model for S3) — no proxy needed. Set
+    # fed_scale>0 + provide co_field= to recover the FED-based mode.
 
     def __post_init__(self) -> None:
         if self.base_cost < 0:
             raise ValueError(f"base_cost must be ≥ 0, got {self.base_cost}")
+        if self.fed_scale < 0:
+            raise ValueError(f"fed_scale must be ≥ 0, got {self.fed_scale}")
         if self.risk_scale < 0:
             raise ValueError(f"risk_scale must be ≥ 0, got {self.risk_scale}")
         if not 0.0 <= self.risk_threshold <= 1.0:
             raise ValueError(
                 f"risk_threshold must be in [0, 1], got {self.risk_threshold}"
+            )
+        if self.walking_speed_mps <= 0:
+            raise ValueError(
+                f"walking_speed_mps must be > 0, got {self.walking_speed_mps}"
             )
         if self.n_samples < 2:
             raise ValueError(f"n_samples must be ≥ 2, got {self.n_samples}")
@@ -127,26 +171,42 @@ def compute_edge_weights(
     risk_map: RiskMap,
     t: float,
     config: EdgeWeightConfig | None = None,
+    *,
+    co_field: StaticCOField | None = None,
 ) -> None:
-    """Set ``weight``, ``edge_risk``, and ``passable`` on every edge (in place).
+    """Set ``weight``, ``edge_risk``, ``edge_fed``, and ``passable`` per edge.
 
-    Cell-grid optimisation (D-026): each cell's risk is queried **once**
-    (not once per edge sample), then edges between adjacent cells average
-    their endpoints' risks. This is O(N_nodes + N_edges) instead of the
-    legacy O(N_edges · N_samples).
+    Per D-039 (2026-05-14) the edge weight is **FED-predominant**:
 
-    For each undirected edge ``(u, v)``:
+    ``weight = base_cost · length
+              + fed_scale · edge_fed
+              + risk_scale · edge_risk``
 
-    * ``edge_risk = (risk_u + risk_v) / 2``
-    * ``weight   = base_cost · length + risk_scale · edge_risk``
-    * ``passable = edge_risk ≤ risk_threshold``
+    where ``edge_fed`` is the predicted ISO 13571 CO-FED contribution of
+    crossing that edge at ``walking_speed_mps``:
+
+    ``edge_fed = (avg_co_ppm) · (length / walking_speed_mps / 60)
+                                       / FED_REFERENCE``
+
+    Cumulative weight along an A* path therefore equals the predicted
+    cumulative FED of an occupant walking that path (plus a small length
+    penalty for tie-breaking). A* minimisation = FED minimisation.
+
+    If ``co_field`` is ``None``, the FED term is dropped and weighting
+    falls back to ``base_cost · length + risk_scale · edge_risk`` (the
+    legacy behaviour). ``passable`` is still computed from ``edge_risk``
+    against ``risk_threshold`` for backwards compatibility, but the
+    default ``risk_threshold=1.0`` means no edge gets dropped.
 
     Args:
         graph: Cell-grid from
             :func:`src.path_planning.building_graph.build_graph`.
-        risk_map: :class:`RiskMap` consulted once per cell.
-        t: Simulation time in seconds.
+        risk_map: :class:`RiskMap` consulted once per cell for ``edge_risk``.
+        t: Simulation time in seconds (passed to both ``risk_map`` and
+            ``co_field`` queries).
         config: Hyperparameters. Defaults to :class:`EdgeWeightConfig()`.
+        co_field: Optional :class:`StaticCOField` consulted once per
+            cell for ``edge_fed``. ``None`` skips the FED term.
 
     Raises:
         ValueError: If any node is missing the ``pos`` attribute or any
@@ -154,13 +214,21 @@ def compute_edge_weights(
     """
     cfg = config or EdgeWeightConfig()
 
-    # Query each node's risk once and cache.
+    # Query each node's risk + CO once and cache.
     node_risk: dict = {}
+    node_co: dict = {}
     for nid, attrs in graph.nodes(data=True):
         pos = attrs.get("pos")
         if pos is None:
             raise ValueError(f"node {nid} missing 'pos' attribute")
-        node_risk[nid] = float(risk_map.query(np.asarray(pos), t=t))
+        pos_arr = np.asarray(pos)
+        node_risk[nid] = float(risk_map.query(pos_arr, t=t))
+        if co_field is not None:
+            node_co[nid] = float(co_field.query(pos_arr, t=t))
+
+    # FED scaling constants.
+    fed_ref = float(TENABILITY.FED_REFERENCE)
+    walking_v = float(cfg.walking_speed_mps)
 
     for u, v, attrs in graph.edges(data=True):
         length = attrs.get("length")
@@ -171,7 +239,20 @@ def compute_edge_weights(
             )
         risk = 0.5 * (node_risk[u] + node_risk[v])
         attrs["edge_risk"] = risk
-        attrs["weight"] = cfg.base_cost * float(length) + cfg.risk_scale * risk
+
+        fed_contrib = 0.0
+        if co_field is not None:
+            avg_co = 0.5 * (node_co[u] + node_co[v])
+            traversal_s = float(length) / walking_v
+            # ISO 13571 §7.3 simplified: FED = CO_ppm · Δt(min) / 27000
+            fed_contrib = max(0.0, avg_co) * (traversal_s / 60.0) / fed_ref
+        attrs["edge_fed"] = fed_contrib
+
+        attrs["weight"] = (
+            cfg.base_cost * float(length)
+            + cfg.fed_scale * fed_contrib
+            + cfg.risk_scale * risk
+        )
         attrs["passable"] = risk <= cfg.risk_threshold
 
 

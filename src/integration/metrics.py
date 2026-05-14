@@ -61,6 +61,15 @@ class ScenarioMetrics:
     danger_zone_exposure_time_s: float
     casualty_rate: float
     cumulative_fed: float
+    max_cumulative_fed: float = 0.0
+    """Worst-case (single-person max) FED at end of run (D-035, 2026-05-14).
+    Captures the value that *matters most* for life-safety: the
+    occupant with the highest FED. Drone swarms earn their value by
+    pulling this maximum down even if the population mean changes
+    little."""
+    p90_cumulative_fed: float = 0.0
+    """90th-percentile FED across the population. Less noisy than max
+    for small N — at n_persons=20 this is the 2nd-worst person."""
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -78,7 +87,9 @@ class ScenarioMetrics:
             f"t_evac={self._fmt_nan(self.mean_evacuation_time_s, '.1f')}s  "
             f"exposure={self.danger_zone_exposure_time_s:5.1f}s  "
             f"dead={self.casualty_rate*100:5.1f}%  "
-            f"FED={self.cumulative_fed:.4f}"
+            f"FED(mean={self.cumulative_fed:.4f} "
+            f"p90={self.p90_cumulative_fed:.4f} "
+            f"max={self.max_cumulative_fed:.4f})"
         )
 
     @staticmethod

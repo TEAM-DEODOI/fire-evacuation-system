@@ -51,6 +51,9 @@ def run_sweep(
     dataset_path: Path,
     raw_dir: Path,
     output_dir: Path,
+    t_start_s: float = 0.0,
+    t_end_s: float = 300.0,
+    dt_s: float = 1.0,
 ) -> List[ScenarioMetrics]:
     """Iterate (scenario, fire, seed) and collect :class:`ScenarioMetrics` rows.
 
@@ -83,6 +86,9 @@ def run_sweep(
                     fds_dir=fds_dir,
                     n_persons=n_persons,
                     seed=seed,
+                    t_end_s=t_end_s,
+                    dt_s=dt_s,
+                    t_start_s=t_start_s,
                 )
             )
             rows.append(
@@ -91,6 +97,9 @@ def run_sweep(
                     fds_dir=fds_dir,
                     n_persons=n_persons,
                     seed=seed,
+                    t_end_s=t_end_s,
+                    dt_s=dt_s,
+                    t_start_s=t_start_s,
                 )
             )
             rows.append(
@@ -101,6 +110,9 @@ def run_sweep(
                     dataset_path=dataset_path,
                     n_persons=n_persons,
                     seed=seed,
+                    t_end_s=t_end_s,
+                    dt_s=dt_s,
+                    t_start_s=t_start_s,
                 )
             )
     write_metrics_csv(rows, output_dir / "comparison.csv")
@@ -142,6 +154,10 @@ def main() -> int:
         type=Path,
         default=Path("results/exp_path_001"),
     )
+    parser.add_argument("--t-start", type=float, default=0.0,
+                        help="Fire-clock offset (s); sim starts at this point.")
+    parser.add_argument("--t-end", type=float, default=300.0)
+    parser.add_argument("--dt", type=float, default=1.0)
     args = parser.parse_args()
 
     rows = run_sweep(
@@ -152,6 +168,9 @@ def main() -> int:
         dataset_path=args.data,
         raw_dir=args.raw_dir,
         output_dir=args.output,
+        t_start_s=args.t_start,
+        t_end_s=args.t_end,
+        dt_s=args.dt,
     )
 
     print(f"\nWrote {len(rows)} rows -> {args.output / 'comparison.csv'}")

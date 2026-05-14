@@ -54,6 +54,17 @@ class AgentFrame:
 
 
 @dataclass
+class DroneFrame:
+    """One drone's state at one tick (D-030)."""
+
+    drone_id: str
+    pos: Tuple[float, float, float]
+    status: str = "searching"        # searching / guiding / idle
+    target_person_id: Optional[str] = None
+    extras: dict = field(default_factory=dict)
+
+
+@dataclass
 class SimulationFrame:
     """All recorded state at one tick. Extend via ``extras``."""
 
@@ -62,6 +73,7 @@ class SimulationFrame:
     fire_scenario_id: str = ""
     seed: int = 0
     agents: List[AgentFrame] = field(default_factory=list)
+    drones: List[DroneFrame] = field(default_factory=list)
     risk_grid: Optional[np.ndarray] = None  # (60, 40) at z_layer if captured
     extras: dict = field(default_factory=dict)
 
@@ -104,6 +116,8 @@ class SimulationRecorder:
         arrived: Optional[Set[str]] = None,
         agent_extras_fn: Optional[Callable[[Any], dict]] = None,
         frame_extras: Optional[dict] = None,
+        drones: Optional[Iterable[Any]] = None,
+        drone_extras_fn: Optional[Callable[[Any], dict]] = None,
     ) -> None:
         """Capture one tick.
 
@@ -168,6 +182,35 @@ class SimulationRecorder:
                 extras=dict(extras),
             ))
 
+        # ── Drones (D-030) ─────────────────────────────────────────
+        drone_frames: List[DroneFrame] = []
+        if drones is not None:
+            for d in drones:
+                did = getattr(d, "drone_id", "?")
+                pos = getattr(d, "position", None)
+                if pos is None:
+                    continue
+                pos_t = (float(pos[0]), float(pos[1]), float(pos[2]))
+                d_status = getattr(d, "status", None)
+                status_str = (
+                    getattr(d_status, "value", str(d_status))
+                    if d_status is not None else "searching"
+                )
+                target_id = getattr(d, "target_person_id", None)
+                extras: dict = {}
+                if drone_extras_fn is not None:
+                    try:
+                        extras = drone_extras_fn(d) or {}
+                    except Exception:  # noqa: BLE001
+                        extras = {}
+                drone_frames.append(DroneFrame(
+                    drone_id=did,
+                    pos=pos_t,
+                    status=status_str,
+                    target_person_id=target_id,
+                    extras=dict(extras),
+                ))
+
         risk_grid = None
         if self.capture_risk_grid and risk_map is not None:
             risk_grid = self._sample_risk_grid(risk_map, t)
@@ -178,6 +221,7 @@ class SimulationRecorder:
             fire_scenario_id=self.fire_scenario_id,
             seed=self.seed,
             agents=agent_frames,
+            drones=drone_frames,
             risk_grid=risk_grid,
             extras=dict(frame_extras or {}),
         )

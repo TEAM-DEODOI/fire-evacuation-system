@@ -111,6 +111,14 @@ def main() -> int:
     parser.add_argument("--t-end", type=float, default=200.0)
     parser.add_argument("--dt", type=float, default=1.0)
     parser.add_argument(
+        "--t-start", type=float, default=0.0,
+        help=(
+            "Fire-clock offset (s). Simulation begins at this point in "
+            "the fire's timeline so the smoke is already developed. "
+            "Effective sim duration = t_end - t_start."
+        ),
+    )
+    parser.add_argument(
         "--raw-dir", type=Path, default=Path("data/raw"),
         help="Parent of FDS scenario folders.",
     )
@@ -161,18 +169,21 @@ def main() -> int:
         fire_scenario_id=args.fire, fds_dir=fds_dir,
         n_persons=args.n_persons, seed=args.seed,
         t_end_s=args.t_end, dt_s=args.dt,
+        t_start_s=args.t_start,
     )
     rec_s2 = _run_with_recorder(
         "S2_fds_swarm", s2_fds_swarm.run,
         fire_scenario_id=args.fire, fds_dir=fds_dir,
         n_persons=args.n_persons, seed=args.seed,
         t_end_s=args.t_end, dt_s=args.dt,
+        t_start_s=args.t_start,
     )
     rec_s3 = _run_with_recorder(
         "S3_fno_swarm", s3_fno_swarm.run,
         fire_scenario_id=args.fire, fds_dir=fds_dir,
         n_persons=args.n_persons, seed=args.seed,
         t_end_s=args.t_end, dt_s=args.dt,
+        t_start_s=args.t_start,
     )
 
     # ── Render figures ─────────────────────────────────────────────

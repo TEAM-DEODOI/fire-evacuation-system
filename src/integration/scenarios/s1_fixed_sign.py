@@ -43,17 +43,21 @@ import numpy as np
 from src.integration.metrics import ScenarioMetrics
 from src.integration.recorder import SimulationRecorder
 from src.integration.scene import Scene, SceneConfig
+from src.integration.person_agent import PersonStatus
 from src.integration.scenarios._common import (
     BUILDING_URDF,
     PLACEHOLDER_URDF,
     building_urdf_path,
     exit_positions,
+    load_truth_co_field,
     load_truth_risk_map,
     spawn_agents,
     zero_risk_map,
 )
 from src.path_planning.building_graph import load_default_fluid_mask
+from src.risk_map.co_field import StaticCOField
 from src.risk_map.risk_map_class import RiskMap
+from src.shared.constants import CELL_SIZE_M
 
 
 # ─── Fixed-sign provider ──────────────────────────────────────────────────
@@ -61,17 +65,20 @@ from src.risk_map.risk_map_class import RiskMap
 class FixedSignNetwork:
     """Static-sign equivalent of a WaypointProvider for S1.
 
-    The full intent (M3-full): a network of pre-placed signs at corridor
-    intersections; each sign points to one exit. When a person queries
-    :meth:`next_waypoint`, they walk to the nearest sign whose pointed-at
-    exit is *currently* below ``danger_threshold``, then continue toward
-    the exit from there.
+    Per D-033 (2026-05-14): **risk-BLIND**. A real fixed-sign system
+    has no live information about fire spread — its signs are painted /
+    illuminated permanently and just point at the nearest exit. That is
+    exactly the baseline we want to compare against: an evacuee follows
+    the painted "EXIT →" arrow without knowing that the chosen exit is
+    currently engulfed in smoke. The drone scenarios (S2/S3) earn their
+    value by knowing the live risk map and routing the occupant
+    elsewhere.
 
-    The M3-mini realization here collapses to "every exit is both sign
-    and target" -- the agent walks straight to the nearest exit whose
-    XYZ position has danger ≤ ``danger_threshold``, falling back to the
-    absolute-nearest exit if all are hazardous. ``sign_positions`` is
-    reserved for M3-full and currently ignored.
+    Implementation: :meth:`next_waypoint` returns the closest exit
+    (Euclidean XY) regardless of any RiskMap. The ``risk_map`` field is
+    kept on the dataclass for interface compatibility but is no longer
+    consulted; ``danger_threshold`` and ``sign_positions`` are reserved
+    for future M3-full work (per-sign hazard switching) but ignored here.
     """
 
     risk_map: RiskMap
@@ -84,32 +91,17 @@ class FixedSignNetwork:
         agent_position: np.ndarray,
         t: float,
     ) -> Optional[np.ndarray]:
-        """Implements :class:`WaypointProvider`.
+        """Return the nearest exit (XY Euclidean), risk-blind (D-033).
 
-        Returns the (3,) world position of the chosen exit, or ``None``
-        if no exits are configured.
+        Returns:
+            ``(3,)`` world position of the closest exit, or ``None`` if
+            no exits are configured.
         """
         if not self.exit_positions:
             return None
         agent_xy = np.asarray(agent_position, dtype=np.float64)[:2]
-
-        # Pass 1: nearest exit below threshold.
         best: Optional[np.ndarray] = None
         best_d2 = math.inf
-        for ex in self.exit_positions:
-            ex_arr = np.asarray(ex, dtype=np.float64)
-            if float(self.risk_map.query(ex_arr, t=t)) > self.danger_threshold:
-                continue
-            dx = ex_arr[0] - agent_xy[0]
-            dy = ex_arr[1] - agent_xy[1]
-            d2 = dx * dx + dy * dy
-            if d2 < best_d2:
-                best_d2 = d2
-                best = ex_arr
-        if best is not None:
-            return best
-
-        # Pass 2: every exit is hazardous -- pick the absolute nearest.
         for ex in self.exit_positions:
             ex_arr = np.asarray(ex, dtype=np.float64)
             dx = ex_arr[0] - agent_xy[0]
@@ -132,6 +124,7 @@ def run(
     seed: int = 0,
     t_end_s: float = 300.0,
     dt_s: float = 1.0,
+    t_start_s: float = 0.0,
     *,
     recorder: Optional[SimulationRecorder] = None,
 ) -> ScenarioMetrics:
@@ -180,6 +173,7 @@ def run(
     try:
         fluid_mask = load_default_fluid_mask()
         truth_rm = load_truth_risk_map(fds_dir, verbose=True)
+        truth_co = load_truth_co_field(fds_dir, verbose=True)
         exits_xyz = exit_positions()
         agents = spawn_agents(scene, n_persons, seed, fluid_mask=fluid_mask)
         n_actual = len(agents)
@@ -192,35 +186,67 @@ def run(
             danger_threshold=0.5,
         )
 
+        # Per-agent finish-time bookkeeping. An agent finishes either by
+        # evacuating (status EVACUATED) or by dying (status DEAD).
         arrived: Dict[str, float] = {}
-        # Per-agent accumulated time in danger > 0.5 zone.
+        died_at: Dict[str, float] = {}
+        # Per-agent accumulated time in danger > 0.5 zone (legacy metric).
         exposure_s: Dict[str, float] = {a.agent_id: 0.0 for a in agents}
-        max_steps = int(math.ceil(t_end_s / dt_s)) + 5
+        # D-034: decouple two timelines.
+        # * t_sim = scene.t          (simulation wall-clock, starts at 0)
+        # * t_fire = t_sim + t_start_s  (absolute fire/risk-map time)
+        # Risk + CO are queried at t_fire so the agents experience the
+        # fire as if it had already been burning for ``t_start_s``
+        # seconds before they began evacuating. Per-agent timing
+        # (arrival, exposure) is reported in t_sim so it stays
+        # interpretable as "time spent evacuating".
+        duration_s = max(0.0, float(t_end_s) - float(t_start_s))
+        max_steps = int(math.ceil(duration_s / dt_s)) + 5
         danger_threshold = 0.5
         for _ in range(max_steps):
-            t_now = float(scene.t)
-            if t_now >= t_end_s:
+            t_sim = float(scene.t)
+            if t_sim >= duration_s:
                 break
+            t_fire = t_sim + float(t_start_s)
             for agent in agents:
-                if agent.agent_id in arrived:
+                if agent.status != PersonStatus.ALIVE:
                     continue
-                wp = provider.next_waypoint(agent.position, t_now)
+                wp = provider.next_waypoint(agent.position, t_fire)
                 if wp is None:
+                    agent.clear_path()
                     continue
-                agent.step_toward(
-                    scene.client,
-                    wp,
-                    dt_s,
-                    fluid_mask=fluid_mask,
+                # D-032: self path planning (wall-aware BFS). Re-plan
+                # whenever the target exit cell changes or the throttle
+                # period has elapsed; otherwise reuse the cached path.
+                tgt_cell = (
+                    int(float(wp[0]) / float(CELL_SIZE_M)),
+                    int(float(wp[1]) / float(CELL_SIZE_M)),
                 )
-                # Accumulate exposure at the post-move position. The
-                # truth map is the same instance the FixedSignNetwork
-                # consults but we re-query independently here so the
-                # exposure metric remains correct under future S2/S3
-                # planner/truth splits.
-                danger = float(truth_rm.query(agent.position, t=t_now))
+                if (
+                    not agent.nav_path
+                    or agent.last_path_target_cell != tgt_cell
+                    or (t_sim - agent.last_path_replan_t)
+                    >= agent.config.path_replan_period_s
+                ):
+                    agent.replan_path_to(wp, fluid_mask, t=t_sim)
+                agent.step_along_path(scene.client, dt_s, fluid_mask)
+                # Sample experienced truth at the post-move position,
+                # using the FIRE clock so the smoke level reflects how
+                # long the fire has been burning, not the sim clock.
+                danger = float(truth_rm.query(agent.position, t=t_fire))
+                co_ppm = float(truth_co.query(agent.position, t=t_fire))
                 if danger > danger_threshold:
                     exposure_s[agent.agent_id] += float(dt_s)
+
+                # FED accumulation + DEAD transitions (M2-full).
+                died = agent.accumulate_exposure(
+                    experienced_co_ppm=co_ppm,
+                    experienced_danger=danger,
+                    dt_s=float(dt_s),
+                )
+                if died:
+                    died_at[agent.agent_id] = t_sim
+                    continue  # dead agents do not check for arrival
 
                 # Arrived if within tolerance of *any* exit (XY only).
                 for ex in exits_xyz:
@@ -228,21 +254,25 @@ def run(
                         float(np.linalg.norm(agent.position[:2] - ex[:2]))
                         <= agent.config.arrival_tolerance_m
                     ):
-                        arrived[agent.agent_id] = t_now
+                        arrived[agent.agent_id] = t_sim
+                        agent.mark_evacuated()
                         break
             # Optional recording (decoupled, no-op if recorder is None).
+            # Stamp frames with t_fire so the renderer reads the
+            # correct fire-map slice for the risk overlay.
             if recorder is not None:
                 recorder.record(
-                    t=t_now,
+                    t=t_fire,
                     agents=agents,
                     risk_map=truth_rm,
                     arrived=set(arrived.keys()),
                     agent_extras_fn=lambda a, _es=exposure_s: {
                         "exposure_s": _es.get(a.agent_id, 0.0),
+                        "cumulative_fed": float(a.cumulative_fed),
                     },
                 )
             scene.step()
-            if len(arrived) == n_actual:
+            if len(arrived) + len(died_at) == n_actual:
                 break
 
         # ── Aggregate ─────────────────────────────────────────────
@@ -254,6 +284,11 @@ def run(
         mean_exposure = (
             float(np.mean(list(exposure_s.values()))) if exposure_s else 0.0
         )
+        casualty_rate = (len(died_at) / n_actual) if n_actual else 0.0
+        feds = np.asarray([a.cumulative_fed for a in agents], dtype=np.float64)
+        mean_fed = float(feds.mean()) if feds.size else 0.0
+        max_fed = float(feds.max()) if feds.size else 0.0
+        p90_fed = float(np.percentile(feds, 90)) if feds.size else 0.0
 
         return ScenarioMetrics(
             scenario_id="S1_fixed_sign",
@@ -263,8 +298,10 @@ def run(
             evacuation_success_rate=success_rate,
             mean_evacuation_time_s=mean_evac_time,
             danger_zone_exposure_time_s=mean_exposure,
-            casualty_rate=0.0,    # M3-α: status machine is M2-full
-            cumulative_fed=0.0,   # M3-α: CO-grid load is M3-full
+            casualty_rate=casualty_rate,
+            cumulative_fed=mean_fed,
+            max_cumulative_fed=max_fed,
+            p90_cumulative_fed=p90_fed,
         )
     finally:
         scene.close()

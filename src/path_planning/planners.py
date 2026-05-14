@@ -114,6 +114,8 @@ class EvacuationPlanner:
         start_xyz: np.ndarray,
         risk_map: RiskMap,
         t: float = 0.0,
+        *,
+        co_field: Optional[object] = None,
     ) -> List[np.ndarray]:
         """Compute the safest path from ``start_xyz`` to the nearest exit.
 
@@ -146,9 +148,11 @@ class EvacuationPlanner:
         # Step 1 — snap start
         start_node = snap_to_graph(arr, self.graph)
 
-        # Step 2 — weighted graph
+        # Step 2 — weighted graph (D-039: FED-based when co_field given)
         g_planning = self.graph.copy()
-        compute_edge_weights(g_planning, risk_map, t=t, config=self.config)
+        compute_edge_weights(
+            g_planning, risk_map, t=t, config=self.config, co_field=co_field,
+        )
         remove_impassable_edges(g_planning)
 
         # Step 3 — A* to every reachable exit
@@ -196,6 +200,8 @@ class EvacuationPlanner:
         current_xyz: np.ndarray,
         risk_map: RiskMap,
         t: float = 0.0,
+        *,
+        co_field: Optional[object] = None,
     ) -> List[np.ndarray]:
         """Re-plan from the current position.
 
@@ -208,11 +214,12 @@ class EvacuationPlanner:
             risk_map: Updated risk information (e.g. a fresh model
                 prediction at time ``t``).
             t: Simulation time (s).
+            co_field: Optional CO field (D-039 FED weighting).
 
         Returns:
             Waypoints. See :meth:`plan`.
         """
-        new_path = self.plan(current_xyz, risk_map, t=t)
+        new_path = self.plan(current_xyz, risk_map, t=t, co_field=co_field)
         if new_path:
             return new_path
         if self.fallback_to_last and self._last_path:

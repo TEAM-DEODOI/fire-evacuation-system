@@ -90,22 +90,22 @@ class Tier1RiskMap(RiskMap):
             t:   Query time (s). If ``None``, uses ``t_max``.
 
         Returns:
-            Danger ∈ [0, 1]. Out-of-bounds points and times beyond ``t_max``
-            return 1.0 (safety default per ``interface_contracts.md`` §2).
-            Times before ``start_time`` are clamped to row 0.
+            Danger ∈ [0, 1]. Out-of-bounds **points** return 1.0
+            (safety default per ``interface_contracts.md`` §2).
+            Times before ``start_time`` are clamped to row 0; times
+            beyond ``t_max`` are clamped to the **last predicted row**
+            (D-038, 2026-05-14). Holding the last frame is much more
+            useful for downstream path-planning than blanket-returning
+            1.0 — a hard 1.0 made every edge in the planner graph
+            impassable, so the drone could not move at all once the
+            simulation passed the GNN prediction horizon.
         """
         xyz_arr = np.asarray(xyz, dtype=np.float32)
 
-        # Out-of-time-range → max danger across all queried points.
-        # (Below start_time we clamp; above t_max we treat as unknown future.)
+        # Below start_time we clamp; above t_max we ALSO clamp (D-038).
         if t is None:
             t = self.t_max
-        if t > self.t_max:
-            if xyz_arr.ndim == 1:
-                return 1.0
-            return np.ones(xyz_arr.shape[0], dtype=np.float32)
-
-        t_clamped = max(self.start_time, t)
+        t_clamped = max(self.start_time, min(self.t_max, t))
         t_idx = int(round((t_clamped - self.start_time) / self.dt))
         t_idx = max(0, min(self.t_out - 1, t_idx))
         risks_at_t = self.node_risks[t_idx]  # (N_nodes,)
@@ -294,16 +294,20 @@ if __name__ == "__main__":
             errors.append(f"OOB at {p.tolist()} returned {d} != 1.0")
     print("  PASS" if not errors else "  FAIL")
 
-    # ── Test 5: out-of-time → 1.0 ───────────────────────────────────────────
-    print("\n[Test 5] t > t_max returns 1.0")
+    # ── Test 5: out-of-time clamps to last frame (D-038) ──────────────────
+    print("\n[Test 5] t > t_max clamps to last frame (D-038)")
+    expected_t_max = rm.query(np.array([5.0, 2.5, 1.5]), t=rm.t_max)
     d = rm.query(np.array([5.0, 2.5, 1.5]), t=999.0)
-    print(f"  query(node0, t=999) = {d}  (expected 1.0)")
-    if d != 1.0:
-        errors.append(f"t > t_max returned {d} != 1.0")
+    print(f"  query(node0, t=999) = {d}  (expected last-frame {expected_t_max})")
+    if abs(float(d) - float(expected_t_max)) > 1e-6:
+        errors.append(f"t > t_max clamp wrong: {d} vs {expected_t_max}")
 
+    expected_batch = rm.query(pts, t=rm.t_max)
     d_batch = rm.query(pts, t=999.0)
-    if not np.allclose(d_batch, 1.0):
-        errors.append(f"batch t > t_max wrong: {d_batch}")
+    if not np.allclose(d_batch, expected_batch, atol=1e-6):
+        errors.append(
+            f"batch t > t_max clamp wrong: {d_batch} vs {expected_batch}"
+        )
 
     # ── Test 6: t=None defaults to t_max ────────────────────────────────────
     print("\n[Test 6] t=None uses t_max (last frame)")

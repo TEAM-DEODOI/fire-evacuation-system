@@ -47,6 +47,12 @@ _STATUS_MARKER = {
     "unknown": "o",
 }
 
+_DRONE_STATUS_COLOR = {
+    "searching": "#9467bd",      # purple (patrolling)
+    "guiding":   "#ff7f0e",      # orange (active shepherd)
+    "idle":      "#7f7f7f",      # grey
+}
+
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
 def _draw_building_footprint(
@@ -112,6 +118,51 @@ def _draw_exits(ax) -> None:
         )
 
 
+def _draw_drone_trails(
+    ax,
+    recorder: SimulationRecorder,
+    line_alpha: float = 0.5,
+    line_width: float = 1.0,
+) -> None:
+    """Draw each drone's trajectory + end marker (D-030)."""
+    if not recorder.frames:
+        return
+    # Build per-drone trajectory by drone_id (first-seen order).
+    drone_ids: List[str] = []
+    seen: set = set()
+    for fr in recorder.frames:
+        for d in fr.drones:
+            if d.drone_id not in seen:
+                seen.add(d.drone_id)
+                drone_ids.append(d.drone_id)
+    for did in drone_ids:
+        xs, ys, status_last = [], [], "searching"
+        for fr in recorder.frames:
+            for d in fr.drones:
+                if d.drone_id == did:
+                    xs.append(d.pos[0])
+                    ys.append(d.pos[1])
+                    status_last = d.status
+                    break
+        if not xs:
+            continue
+        # Trail (purple-ish, semi-transparent)
+        ax.plot(
+            xs, ys, "--",
+            color=_DRONE_STATUS_COLOR.get("searching", "#888"),
+            lw=line_width, alpha=line_alpha,
+            zorder=2,
+        )
+        # End marker: triangle, coloured by final status
+        ax.plot(
+            xs[-1], ys[-1], "^",
+            color=_DRONE_STATUS_COLOR.get(status_last, "#888"),
+            markersize=11,
+            markeredgecolor="black", markeredgewidth=0.9,
+            zorder=5,
+        )
+
+
 def _draw_agent_trails(
     ax,
     recorder: SimulationRecorder,
@@ -157,11 +208,19 @@ def _make_legend(ax) -> None:
         Line2D([0], [0], marker="X", linestyle="None",
                markerfacecolor=_STATUS_COLOR["alive"], markeredgecolor="black",
                markersize=9, label="alive (still inside)"),
+        Line2D([0], [0], marker="^", linestyle="None",
+               markerfacecolor=_DRONE_STATUS_COLOR["searching"],
+               markeredgecolor="black",
+               markersize=10, label="drone (searching)"),
+        Line2D([0], [0], marker="^", linestyle="None",
+               markerfacecolor=_DRONE_STATUS_COLOR["guiding"],
+               markeredgecolor="black",
+               markersize=10, label="drone (guiding)"),
         Line2D([0], [0], marker="*", linestyle="None",
                markerfacecolor=_STATUS_COLOR["evacuated"], markeredgecolor="black",
                markersize=13, label="exit"),
     ]
-    ax.legend(handles=handles, loc="lower right", fontsize=8, framealpha=0.9)
+    ax.legend(handles=handles, loc="lower right", fontsize=7, framealpha=0.9)
 
 
 def _style_axes(ax, title: str = "") -> None:
@@ -214,6 +273,7 @@ def render_trajectories(
             grid = _sample_risk_grid(risk_map, risk_at_t)
             _draw_risk_overlay(ax, grid)
 
+    _draw_drone_trails(ax, recorder)
     _draw_agent_trails(ax, recorder)
     _draw_exits(ax)
     _make_legend(ax)
@@ -344,6 +404,7 @@ def render_comparison(
         _draw_building_footprint(ax, fluid_mask)
         if risk_grid_cached is not None:
             _draw_risk_overlay(ax, risk_grid_cached)
+        _draw_drone_trails(ax, rec)
         _draw_agent_trails(ax, rec)
         _draw_exits(ax)
         # Per-panel title with a one-line outcome summary.
@@ -419,6 +480,22 @@ def render_animation(
         markers[aid] = m
         trails[aid] = l
 
+    # Persistent drone markers (D-030).
+    drone_ids = sorted({d.drone_id for fr in recorder.frames for d in fr.drones})
+    drone_markers: dict = {}
+    drone_trails: dict = {}
+    for did in drone_ids:
+        (dm,) = ax.plot([], [], "^",
+                        markersize=11,
+                        color=_DRONE_STATUS_COLOR["searching"],
+                        markeredgecolor="black", markeredgewidth=0.8,
+                        zorder=5)
+        (dl,) = ax.plot([], [], "--",
+                        color=_DRONE_STATUS_COLOR["searching"],
+                        lw=1.0, alpha=0.45, zorder=2)
+        drone_markers[did] = dm
+        drone_trails[did] = dl
+
     # Risk overlay artist (may be replaced each frame if heatmap dynamic).
     overlay_imgs: List = []
 
@@ -464,7 +541,28 @@ def render_animation(
                         break
             trails[ag.agent_id].set_data(xs, ys)
             trails[ag.agent_id].set_color(color)
-        artists = list(markers.values()) + list(trails.values()) + overlay_imgs
+        # Drone markers + trails
+        for d in frame.drones:
+            d_color = _DRONE_STATUS_COLOR.get(d.status, _DRONE_STATUS_COLOR["searching"])
+            dm = drone_markers.get(d.drone_id)
+            if dm is not None:
+                dm.set_data([d.pos[0]], [d.pos[1]])
+                dm.set_color(d_color)
+            dxs, dys = [], []
+            for fr in recorder.frames[: i + 1]:
+                for d2 in fr.drones:
+                    if d2.drone_id == d.drone_id:
+                        dxs.append(d2.pos[0])
+                        dys.append(d2.pos[1])
+                        break
+            dl = drone_trails.get(d.drone_id)
+            if dl is not None:
+                dl.set_data(dxs, dys)
+                dl.set_color(d_color)
+        artists = (
+            list(markers.values()) + list(trails.values()) + overlay_imgs
+            + list(drone_markers.values()) + list(drone_trails.values())
+        )
         return artists
 
     ani = FuncAnimation(
@@ -548,11 +646,27 @@ def render_comparison_animation(
                            lw=1.2, alpha=0.5, zorder=3)
             markers[aid] = m
             trails[aid] = l
+        # Drone markers per panel
+        drone_ids = sorted({d.drone_id for fr in rec.frames for d in fr.drones})
+        d_markers: dict = {}
+        d_trails: dict = {}
+        for did in drone_ids:
+            (dm,) = ax.plot([], [], "^", markersize=10,
+                            color=_DRONE_STATUS_COLOR["searching"],
+                            markeredgecolor="black", markeredgewidth=0.7,
+                            zorder=5)
+            (dl,) = ax.plot([], [], "--",
+                            color=_DRONE_STATUS_COLOR["searching"],
+                            lw=0.9, alpha=0.45, zorder=2)
+            d_markers[did] = dm
+            d_trails[did] = dl
         panel_state.append({
             "rec": rec,
             "ax": ax,
             "markers": markers,
             "trails": trails,
+            "d_markers": d_markers,
+            "d_trails": d_trails,
             "overlay": [],
             # Precomputed trajectory and per-frame index lookup.
             "frame_t": np.asarray([fr.t for fr in rec.frames]),
@@ -633,6 +747,28 @@ def render_comparison_animation(
                     l.set_data(xs, ys)
                     l.set_color(color)
                     artists.append(l)
+            # Drones (D-030)
+            for d in frame.drones:
+                d_color = _DRONE_STATUS_COLOR.get(
+                    d.status, _DRONE_STATUS_COLOR["searching"]
+                )
+                dm = st["d_markers"].get(d.drone_id)
+                if dm is not None:
+                    dm.set_data([d.pos[0]], [d.pos[1]])
+                    dm.set_color(d_color)
+                    artists.append(dm)
+                dxs, dys = [], []
+                for fr2 in rec.frames[: idx + 1]:
+                    for d2 in fr2.drones:
+                        if d2.drone_id == d.drone_id:
+                            dxs.append(d2.pos[0])
+                            dys.append(d2.pos[1])
+                            break
+                dl = st["d_trails"].get(d.drone_id)
+                if dl is not None:
+                    dl.set_data(dxs, dys)
+                    dl.set_color(d_color)
+                    artists.append(dl)
         fig.suptitle(
             f"timeline t={t:.0f}s  (tick {i + 1}/{len(times)})",
             fontsize=12, y=1.005,

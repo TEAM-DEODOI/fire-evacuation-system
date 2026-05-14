@@ -542,6 +542,131 @@ primary metric).
 
 ---
 
+## D-028: PersonAgent spawn pool = `interior_mask` (FDS-union, thr=0.6)
+
+**Date**: 2026-05-14
+
+**Decision**: PersonAgent 의 spawn pool 을 단순 fluid mask 대신 새로
+도입한 `interior_mask` (`data/processed/interior_mask.npz`) 로 변경.
+interior_mask = (∀ FDS 시나리오에 대해 final-frame risk > 0.6 의 OR
+union) AND (fluid mask). z=3 에 701 cells (vs fluid mask 1826 cells).
+
+**Alternatives considered**:
+
+1. **Fluid mask only** — D-026 의 첫 구현. FDS 가 30×20 SLCF 영역의 외부
+   buffer / open courtyard 까지 모두 fluid 로 처리하므로 PersonAgent
+   가 건물 외부에 spawn 되는 시각적 버그 발생. 반려.
+2. **Connected-component prune** — BLUE 영역들 중 grid boundary 와 닿는
+   component 를 외부로 분류. 그러나 exits 가 boundary 가까이 있어
+   내부+외부가 단일 component 로 묶이면서 1518 → 94 cells 로 너무
+   aggressive 하게 잘림. 반려.
+3. **Manual rectangle-based outdoor zones** — 사용자가 image 상에서
+   본 외부 영역을 (i_min, i_max, j_min, j_max) box 로 정의해 mask 에서
+   제거. 가능하지만 hand-tuned + brittle. 반려.
+4. **Choose interior by risk threshold (D-028 채택)** — 사용자 통찰:
+   "외부 공간은 연기가 atmosphere 로 빠져나가서 risk 가 누적되지
+   않는다, 따라서 final-frame risk 가 높은 셀이 내부." 다양한 threshold
+   를 sweep 한 결과 (`scripts/sweep_interior_threshold.py`): 0.05 →
+   외부 누출 포함, 0.30 → 단일 시나리오에서 깨끗하나 fire 위치 종속,
+   **0.6 → 46-시나리오 union 으로 모든 내부 방 cover + 외부 누출 모두
+   제거**.
+
+**Rationale**:
+
+* **Physics-grounded**: open courtyard 는 위로 trapped smoke 가 분산
+  되어 risk≈0, 닫힌 실내는 누적. 시각적·물리적 둘 다 합리적 정의.
+* **Geometry-agnostic**: STL/URDF 와 무관, 순수 FDS 데이터에서 파생.
+  Building 모델 변경에도 같은 절차로 자동 재생성 가능 (`scripts/build_interior_mask.py`).
+* **EXP-PATH-001 baseline 정확화**: 외부 spawn 제거 후 S1 (fixed-sign)
+  의 stuck-in-fire 행동이 드러남 — 1500kW 시나리오에서 S1 exposure
+  0s → mean 92s (max 105s), evac 80% → 53%. H6 trade-off 가
+  훨씬 강한 신호로 측정됨. S2/S3 는 100% evac + ≤1.4s exposure 유지.
+* **Re-buildable & versioned**: union+threshold 절차를 `build_interior_mask.py`
+  에 박아두어 향후 시나리오 추가/변경 시 단일 스크립트로 재생성.
+
+**Implementation notes**:
+
+* `src/path_planning/building_graph.py::load_interior_mask()` 가 npz
+  로딩 + GRID_SHAPE 검증.
+* `src/integration/scenarios/_common.py::spawn_agents()` 가 z=3 layer
+  의 interior_mask 를 spawn pool 로 사용. `interior_mask` 인자도
+  노출하여 향후 다른 mask (예: paper figure 용 building-only) 도 사용
+  가능.
+* 백업: `data/processed/interior_mask.npz.bak`, `.bak2` (시도된 다른
+  threshold / 알고리즘의 결과).
+
+**Cross-ref**: `docs/lessons_learned.md::L-016`, D-026 (cell-grid path
+planning), `scripts/build_interior_mask.py`,
+`scripts/visualize_interior_mask.py`, `scripts/sweep_interior_threshold.py`.
+
+---
+
+## D-029: PersonAgent FED 활성화 (M2-full + M3-full) — H6 primary metric
+
+**Date**: 2026-05-14
+
+**Decision**: PersonAgent 가 ISO 13571 §7.3 FED 누적 + ``DEAD`` 전이를
+시뮬 매 step 마다 수행한다. 시나리오 runner 는 raw CO field 를 별도
+로드 (D-029 동반: `StaticCOField`, L-017) 하고 매 step 의 occupant
+위치에서 ``query(xyz, t)`` 한 CO ppm 을 `agent.accumulate_exposure(...)`
+에 push 한다.
+
+**API 형태**: `PersonAgent` 에 두 메서드 신설.
+
+```python
+def accumulate_exposure(
+    self,
+    experienced_co_ppm: float,
+    experienced_danger: float,
+    dt_s: float,
+) -> bool:
+    """ALIVE → DEAD 전이 + FED 누적. 죽었으면 True 반환."""
+
+def mark_evacuated(self) -> None:
+    """ALIVE → EVACUATED. idempotent; DEAD 는 override 안 함."""
+```
+
+기존 monolithic `update()` 은 폐기. 시나리오는 ``step_toward`` +
+``accumulate_exposure`` + ``mark_evacuated`` 를 명시적으로 순서대로
+호출 — 디버깅 / replan 로직 / 시나리오 차이가 명확해짐.
+
+**Death 조건** (두 가지 OR):
+* `cumulative_fed ≥ fed_threshold` (= TENABILITY.FED_THRESHOLD = 0.3,
+  ISO 13571 sensitive-population)
+* `experienced_danger ≥ instant_death_danger` (= 0.99, flashover proxy
+  for visibility=0 + temperature 매우 높은 상황)
+
+**Alternatives considered**:
+
+1. **Monolithic `PersonAgent.update(provider, danger, co)`** —
+   기존 스켈레톤. 시나리오 코드 양은 줄지만 (1) S2/S3 의 replan 타이밍이
+   step_toward 와 분리되기 어려움, (2) 시나리오별 분기 (`provider.next_waypoint`
+   vs `planner.replan`) 가 PersonAgent 안으로 leak. **반려**.
+2. **FED 를 시나리오 코드에서 직접 누적** (PersonAgent 는 status 만) —
+   3 시나리오에 동일 로직 중복. **반려**.
+3. **(채택) `accumulate_exposure` 단일 메서드 + `mark_evacuated` 헬퍼** —
+   FED + DEAD 만 PersonAgent 책임, EVACUATED 는 시나리오 책임 (exit
+   tolerance 가 시나리오마다 다를 수 있고, 도착 판정도 시나리오 logic
+   소관). 메서드 두 개 = 책임 두 개, 명확.
+
+**EXP-PATH-001 결과 (활성화 후)**: 3 fires × 3 seeds × 5 agents
+(`results/exp_path_001/comparison.csv`):
+
+* S1 mean FED: **0.00234** (max 0.0062 at 1500kW T05 seed=0)
+* S2 mean FED: **0.0000283**
+* S3 mean FED: **0.0000284** (S2 와 거의 동일 — H5 transitive 유지)
+* ratio S2/S1 = **0.012** → **H6 PASS** (목표 ≤ 0.7, 실제 -98.8%)
+* casualty_rate = 0 (5 agents × 200 s small sweep 에서는 FED 가 0.3
+  threshold 까지 안 올라옴; 20 agents × 300 s 큰 sweep 에서 더 강한
+  신호 기대).
+
+**Cross-ref**: `docs/lessons_learned.md::L-017` (StaticCOField design),
+`src/risk_map/co_field.py`, `src/risk_map/fed.py`,
+`src/integration/person_agent.py::{accumulate_exposure, mark_evacuated}`,
+`src/integration/scenarios/{s1_fixed_sign, s2_fds_swarm, s3_fno_swarm}.py`.
+
+---
+
 ## How to Add a Decision
 
 When making a major scope or interface decision:
