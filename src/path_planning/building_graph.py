@@ -45,12 +45,41 @@ _BREATHING_Z_M = 0.25 + CELL_SIZE_M * _DEFAULT_Z_LAYER   # 1.75
 NodeId = Tuple[int, int, int]
 
 
+_ACTIVE_EXIT_NAMES: Tuple[str, ...] = ("exit_west",)
+"""Currently *active* canonical exit names (D-041, 2026-05-14).
+
+Only ``exit_west`` is a real evacuation exit. The other two exits
+(``exit_north``, ``exit_east``) remain defined in
+:mod:`src.shared.building` and are still used as drone-swarm spawn
+spots (see :func:`src.integration.scenarios._common.drone_spawn_positions`),
+but persons cannot evacuate through them and the renderer hides them.
+Re-enable simply by adding their names to this tuple — no other code
+change required."""
+
+
 def _canonical_exits() -> List[Tuple[float, float, float]]:
-    """Canonical 3-exit positions (deferring to ``shared.building``).
+    """Canonical *active* exit positions (deferring to ``shared.building``).
 
     Wrapped in a function to avoid a hard import-time dependency on
     NetworkX construction in ``shared.building`` for callers that only
-    want the cell grid.
+    want the cell grid. The filter keeps only exits listed in
+    :data:`_ACTIVE_EXIT_NAMES` — currently west-only (D-041).
+    """
+    from src.shared.building import build_default_graph
+    bg = build_default_graph()
+    return [
+        (e.pos[0], e.pos[1], e.pos[2])
+        for e in bg.exits
+        if e.id in _ACTIVE_EXIT_NAMES
+    ]
+
+
+def _canonical_exits_all() -> List[Tuple[float, float, float]]:
+    """All canonical exits *including inactive ones* (D-041).
+
+    Used by drone-swarm spawn so the swarm keeps its original 3
+    starting positions regardless of how many exits are currently
+    active.
     """
     from src.shared.building import build_default_graph
     bg = build_default_graph()
@@ -378,30 +407,33 @@ if __name__ == "__main__":
     sizes = [len(c) for c in components[:5]]
     print(f"  top component sizes: {sizes}")
 
-    # ── 4. Exit cells tagged + all reachable from main component ────
-    print("\n[4] Three exits tagged AND all in the same component")
+    # ── 4. Active exit cells tagged (D-041 west-only) ───────────────
+    n_active = len(_ACTIVE_EXIT_NAMES)
+    print(f"\n[4] {n_active} active exit(s) tagged in graph")
     exits_in_graph = exit_nodes(g)
-    print(f"  exit cells = {exits_in_graph}")
-    if len(exits_in_graph) != 3:
-        errors.append(f"expected 3 exits, got {len(exits_in_graph)}")
+    print(f"  exit cells = {exits_in_graph}  (active names = {_ACTIVE_EXIT_NAMES})")
+    if len(exits_in_graph) != n_active:
+        errors.append(
+            f"expected {n_active} active exit(s), got {len(exits_in_graph)}"
+        )
     for ex_cell in exits_in_graph:
         if ex_cell not in g:
             errors.append(f"exit cell {ex_cell} not in graph")
-    # All exits must be in ONE component (otherwise no full evacuation possible).
+    # All ACTIVE exits must be in ONE component.
     exit_components = []
     for c in components:
         c_set = set(c)
         cnt = sum(1 for ex in exits_in_graph if ex in c_set)
         if cnt > 0:
             exit_components.append((len(c), cnt))
-    print(f"  components containing exits: {exit_components}")
+    print(f"  components containing active exits: {exit_components}")
     if len(exit_components) > 1:
         errors.append(
-            f"exits are split across {len(exit_components)} components"
+            f"active exits split across {len(exit_components)} components"
         )
-    elif exit_components and exit_components[0][1] != 3:
+    elif exit_components and exit_components[0][1] != n_active:
         errors.append(
-            f"only {exit_components[0][1]}/3 exits in their component"
+            f"only {exit_components[0][1]}/{n_active} active exits in their component"
         )
 
     # ── 5. snap_to_graph round-trip ─────────────────────────────────

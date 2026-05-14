@@ -45,6 +45,7 @@ from src.integration.scenarios._common import (
     BUILDING_URDF,
     PLACEHOLDER_URDF,
     building_urdf_path,
+    drone_spawn_positions,
     exit_positions,
     load_truth_co_field,
     load_truth_risk_map,
@@ -303,8 +304,11 @@ def run(
                 ),
             ),
         )
+        # D-041: drones still spawn at all 3 canonical exits.
+        drone_spawn_xyz = drone_spawn_positions()
         spawn_seeds = [
-            exits_xyz[i % len(exits_xyz)].copy() for i in range(int(n_drones))
+            drone_spawn_xyz[i % len(drone_spawn_xyz)].copy()
+            for i in range(int(n_drones))
         ]
         swarm.spawn(spawn_xyzs=spawn_seeds, interior_mask=interior_mask)
 

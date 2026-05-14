@@ -238,11 +238,33 @@ def load_truth_co_field(fds_dir: Path, verbose: bool = True) -> StaticCOField:
 
 # ─── Graph + agents helpers ───────────────────────────────────────────────
 def exit_positions() -> List[np.ndarray]:
-    """All exit-node positions as (3,) world arrays at breathing height."""
+    """ACTIVE exit-node positions (D-041 west-only) as (3,) world arrays.
+
+    Filters by :data:`src.path_planning.building_graph._ACTIVE_EXIT_NAMES`
+    (currently ``("exit_west",)``). Inactive exits are still present in
+    :mod:`src.shared.building` and used as drone-swarm spawn locations
+    via :func:`drone_spawn_positions`, but persons cannot evacuate
+    through them and the renderer hides them.
+    """
     graph = build_graph()
     return [
         np.asarray(graph.nodes[nid]["pos"], dtype=np.float64)
         for nid in exit_nodes(graph)
+    ]
+
+
+def drone_spawn_positions() -> List[np.ndarray]:
+    """ALL canonical exit positions (active + inactive) for drone spawn.
+
+    The drone swarm should still launch from the same three exit
+    locations as before D-041, regardless of which exits are currently
+    active for person evacuation. Source: :mod:`src.shared.building`.
+    """
+    from src.shared.building import build_default_graph
+    bg = build_default_graph()
+    return [
+        np.asarray([e.pos[0], e.pos[1], e.pos[2]], dtype=np.float64)
+        for e in bg.exits
     ]
 
 
