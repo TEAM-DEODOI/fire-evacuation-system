@@ -408,6 +408,29 @@ diagnostic use.
 
 ---
 
+## L-013: Sparse-input model autoregress distribution shift
+
+**Symptom**: Sparse-input ConvLSTM (L4e, 39-sensor) 의 60s autoregress 가
+t₀+10s 에서는 정확하다가 시간 진행할수록 도메인 전체가 빨강 (danger ≥ 0.5) 으로
+saturate. IoU 0.18, FNR 0% (모든 cell 위험 예측).
+
+**Root cause**: 모델은 **(sparse input → dense target)** 매핑으로 학습됐는데,
+naïve autoregress 시 **(dense output → 다음 dense output)** 으로 chaining.
+즉 inference 시 학습 분포 밖의 input distribution 으로 진입 → drift 누적 →
+"everywhere dangerous" 가 minimum-MSE local optimum 으로 수렴.
+
+**Fix**: `autoregress_sparse(..., resparsify=True)` — 매 step 모델 출력의
+sensor 위치 외 cell T/V/CO 채널을 0 으로 강제. 결과: IoU 0.182 → **0.581**
+(3.2× 향상). 실제 deployment 와도 일치 (매 10s 마다 sensor measurement update).
+
+**Status**: Fixed via inference-time re-sparsify. `evaluate_sparse_model.py`
+의 `--resparsify` flag 가 default 로 False 였음 — 이게 conservative bias 의
+숨은 원인. `visualize_60s_5model.py` 도 동일하게 갱신.
+
+**Cross-ref**: `docs/40_tier2_models_continuous.md §6.2`, `docs/decisions.md D-025`.
+
+---
+
 ## How to Add a Lesson
 
 When you encounter and fix a bug worth remembering:

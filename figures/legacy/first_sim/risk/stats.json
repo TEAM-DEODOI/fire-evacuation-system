@@ -1,0 +1,14 @@
+{
+  "scenario_id": "first_sim",
+  "danger_max": 0.8495336174964905,
+  "danger_mean_at_t_end": 0.20362770557403564,
+  "aset_min_s": 10.0,
+  "aset_max_s": 300.0,
+  "fraction_safe_at_t_end": 0.7935416666666667,
+  "fed_final": {
+    "near_fire (18, 10, 1.75)": 0.043110820440598475,
+    "far_from_fire (2, 18, 1.75)": 0.0004640140165941341,
+    "mid_corridor (15, 5, 1.75)": 0.003848180701703201
+  },
+  "fed_threshold": 0.3
+}

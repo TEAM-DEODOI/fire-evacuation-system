@@ -128,6 +128,18 @@ checkpoints/**/final.pt
 !checkpoints/conv_lstm/best.pt
 !checkpoints/fno_no_pi/best.pt
 !checkpoints/fno_pi/best.pt
+!checkpoints/tier1_gnn/best.pt
+!checkpoints/tier1_gnn_v3/best.pt
+!checkpoints/conv_lstm_sparse_v3/best.pt
+!checkpoints/fno_sparse_v3/best.pt
+!checkpoints/ensemble_decoder/best.pt
+!checkpoints/ensemble_decoder_fn10/best.pt
+!checkpoints/ensemble_decoder_fn25/best.pt
+!checkpoints/ensemble_decoder_fn40/best.pt
+
+# Decoder training-data cache — 15 MB, regenerate via
+#   python scripts/precompute_decoder_data.py
+results/decoder_data/
 
 # ─────────────────────────────────────────────────────────────────────────
 # Weights & Biases run logs (offline runs, debug logs)
@@ -138,11 +150,11 @@ wandb/
 # Generated figures (regenerable via scripts/*.py)
 # Subdirectories are ignored; root-level canonical figures are kept.
 # ─────────────────────────────────────────────────────────────────────────
-figures/eval_convlstm/
-figures/risk_compare/
-figures/first_sim/
-figures/sim_*/
-figures/scenario_*/
+# legacy moved (figures/legacy/eval_convlstm/)
+# legacy moved (figures/legacy/risk_compare/)
+# legacy moved (figures/legacy/first_sim/)
+# legacy moved (figures/legacy/sim_*/)
+# legacy moved (figures/legacy/scenario_*/)
 
 # Allow root-level canonical artefacts (commit explicitly with `git add -f` if needed)
 !figures/.gitkeep

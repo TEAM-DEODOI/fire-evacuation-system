@@ -500,40 +500,83 @@ figures/           — paper/slide figures
 
 ---
 
-## Current Project State (2026-05-12)
+## Current Project State (2026-05-14)
 
-> **Detailed handoff**: `docs/handoff_2026_05_12.md` — read first when
-> resuming. Holds full decision log, evaluation numbers, file index, and
-> the priority queue.
+> **Compact-resistant snapshot**: `docs/CURRENT_SESSION_STATE.md` — **read
+> this first** when resuming. Single source of truth for results,
+> checkpoints, scripts, lessons, and next steps as of last session.
+>
+> Supporting docs (read as needed):
+> - `docs/decisions.md` — D-023 through D-027 (re-sparsify, ensemble, framing)
+> - `docs/60_evaluation_layers.md` — L1/L2/L3/L4 framework + numbers
+> - `docs/70_results_summary.md` — full result table
+> - `docs/90_next_steps.md` — H6 path planning checklist
 
-**Completed**:
-- Tier 0/1/2 (foundation, simulation tools, data extraction) — all ✅
-- Data pipeline: 33-scenario `data/processed/dataset.h5` (D-024 all-train,
-  990 train pairs, val/ood empty pending Member A's extra sims)
-- Risk Map module (tenability / FED / ASET / StaticRiskMap / converter /
-  path_metrics) with D-022 4-metric H6 evaluation
-- ConvLSTM baseline trained: 100 epoch, train loss 0.001, **risk-map IoU
-  0.85 / FNR 9.9% (✅ H4/H5)**, inference 1664× faster than FDS (✅ H1)
-- PI-FNO code complete and ready to launch (no PI + full PI curriculum)
-- wandb integration on both training entry points
-- Risk-map comparison artefacts (FDS vs ConvLSTM) generated at
-  `figures/risk_compare/scenario_{014,011}/`
+**System vision** (locked, see `CURRENT_SESSION_STATE.md` §1):
 
-**Recent decisions**:
+```
+   39 fire detectors (D-024 v3.3, z=2.5 m)
+                  ↓
+   ┌──────────────┴──────────────┐
+   ▼                             ▼
+Tier 1 (Legacy)              Tier 2 (Intelligent)
+binary on/off                continuous T, V, CO (sparse)
+   ↓                             ↓
+SimpleFireGNN (12K)          Sparse ConvLSTM / Sparse FNO
+per-node danger              per-cell danger
+   └──────────────┬──────────────┘
+                  ▼
+        3-way Ensemble (L4g) + geodesic cell projection
+                  ↓
+        Risk Map → Path planning (A*) [🔜 H6 next]
+```
+
+**Completed (Tier 0–2 + dual surrogate + evaluation)**:
+- Data pipeline: 33-train + 13-OOD `data/processed/*.h5`, D-024 all-train
+- Full-input models: ConvLSTM, FNO no-PI, FNO PI (all trained, RunPod A100)
+- Risk Map module (tenability / FED / ASET / StaticRiskMap / path_metrics)
+- **39 detector positions** (D-024 v3.3) confirmed against floor plan
+- **D-023 trigger** (heat 60 °C OR vis 10 m, latched) + binary sequences for 46 sims
+- **Tier 1 GNN** (SimpleFireGNN, 12 K params) trained → **IoU 0.904, 13/13 H5 ✅**
+- **Tier 2 Sparse ConvLSTM v3** (5-ch) trained + **L-013 re-sparsify fix** → IoU 0.581
+- **Tier 2 Sparse FNO v3** (6-ch + sensor indicator) trained → IoU 0.525, **FNR 10.4%**
+- **L4g 3-way ensemble** (GNN + Sparse ConvLSTM + Sparse FNO) with
+  **geodesic IDW node→cell projection**:
+  - Balanced (0.5, 0.25, 0.25): IoU 0.618, FNR 5.1% — 5/13 H5 ✅H4
+  - Min-FNR (0.6, 0.1, 0.3):    IoU 0.590, FNR **3.7%** ✅H4
+- Paper figures 1–8 ready (`figures/current/01..10_*/`)
+
+**Hypothesis status**:
+- H1 Speed: 52,000× ✅
+- H2 RelL2 ≤ 0.15: 0.136 ✅
+- H3 FNO > ConvLSTM OOD: ⚠ partial (sparse regime yes, full SLCF no)
+- H4 FNR < 10%: ensemble 3.7–6.4% ✅
+- H5 IoU ≥ 0.70: Tier 1 GNN 0.904 ✅
+- **H6 Dynamic A* FED reduction ≥ 30%: 🔜 NEXT SESSION**
+
+**Recent decisions** (see `docs/decisions.md`):
 - D-022: H6 metrics = peak_danger / time_in_hazard / aset_margin / fed_final
-- D-023: 30 → 33 scenarios, 4 → 3 HRR levels (500/1000/1500 kW)
-- D-024: all 33 → train; val/ood reserved for separate simulations
+- D-023: 30 → 33 train scenarios, 4 → 3 HRR levels (and trigger model)
+- D-024 v3.3: 39 detector positions (Tier 1/2 shared infrastructure)
+- D-025: Re-sparsify chaining (L-013 fix) — sparse Tier 2 default operation
+- D-026: 3-way ensemble + geodesic projection — cell-level reference
+- D-027: Paper framing — "dual surrogate on shared 39-detector infrastructure"
 
-**Next priority**:
-1. ★★★ FNO no-PI + full-PI training on RunPod A100 (~30 min, ~$0.40)
-2. ★★ Path planning (Week 11) — edge_weights / planners / evacuation_sim
-3. ★ val/ood simulations from Member A (1500kW H, 2000kW, new locs)
+**Next priority (single critical task)**:
 
-**Active blockers**:
-- `val`/`ood` simulations absent → H3 (FNO > ConvLSTM on OOD) cannot be
-  measured. All other hypotheses (H1, H4, H5, H6-premise) already on track.
-- GPU access — CPU works but 2 hrs/model. RunPod migration plan
-  documented in handoff §7.
+★★★ **H6 verification — Path planning + EXP-PATH-001** (~5–7 h)
+
+Modules to create:
+1. `src/tier1/tier1_risk_map.py` — `Tier1RiskMap(RiskMap)` adapter
+2. `src/path_planning/edge_weights.py` — α·base_time + β·integrated_risk
+3. `src/path_planning/planners.py` — Dijkstra / StaticAvoidance / DynamicPredictive
+4. `src/path_planning/evacuation_sim.py` — `EvacuationSimulator`
+5. `experiments/exp_path_001.py` — 3 scenarios × 3 planners × 8 starts = 72 trials
+
+Goal: **Dynamic A* cumulative FED ≤ 0.7 × Dijkstra FED**
+
+**Active blockers**: none. All upstream surrogates and ensemble plumbing
+ready. H6 is purely path-planning + sim integration work.
 
 ---
 
