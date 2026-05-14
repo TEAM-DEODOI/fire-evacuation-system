@@ -3,14 +3,18 @@
 > **이 파일을 새 Claude 세션에서 가장 먼저 읽으세요.**
 > Compact 직전 / 직후 무엇을 했고 어디서 멈췄는지 정확히 기록.
 >
-> **Last updated**: 2026-05-14 (evening — learned decoder breakthrough)
-> **Latest commit**: `Learned ensemble decoder (Option 2) → IoU 0.733 / FNR 11.5% / H5 9-13, +0.115 over hand-crafted`
+> **Last updated**: 2026-05-14 (late evening — H6 readiness complete)
+> **Latest commit**: `546c9cd — 5-fold CV (gap -0.003) + REPRODUCE.md`
+> **Status**: ✅ All pre-H6 verifications passed. H6 path-planning ready to start.
 
 ---
 
 ## 0. 한 줄 요약
 
-> **Tier 1 GNN (0.90) + Tier 2 Sparse FNO (0.525) + Sparse ConvLSTM (0.581) 의 3-way ensemble + geodesic projection 으로 cell-level IoU 0.62 + FNR 3.7-5.1% 달성. 이제 H6 (path planning) 으로 가야 paper headline 완성.**
+> **L4h Learned Ensemble Decoder (per-cell MLP, 1.4K params): cell-level IoU
+> **0.733** / FNR 11.5%, 5-fold CV gap -0.003 (overfit 없음), full L4h pipeline
+> **3,028× faster** than FDS. RiskMap adapters 모두 준비. 다음 작업 = H6 path
+> planning + EXP-PATH-001.**
 
 ---
 
@@ -88,25 +92,38 @@
 
 | ID | 가설 | 측정 | 통과 |
 |---|---|---|---|
-| H1 Speed ≥ 1000× | 52,000× | ✅ |
+| H1 Speed ≥ 1000× | GNN 1,670,749×, Decoder 220,851×, **full L4h pipeline 3,028×** | ✅ |
 | H2 RelL2 ≤ 0.15 | 0.136 (ConvLSTM) | ✅ |
 | H3 FNO > ConvLSTM OOD | full SLCF ❌ / sparse 39 ✅ (FNO no-PI 우위) | ⚠ partial |
-| H4 FNR < 10% | GNN 4.6%, 3-way ensemble 3.7-6.4% | ✅ |
-| H5 IoU ≥ 0.70 | GNN 0.904 (13/13 시나리오 통과) | ✅ |
-| **H6 Dynamic A* FED ≥ 30%↓** | **path planning 미구현** | **🔜** |
+| H4 FNR < 10% | GNN 4.6%, 3-way 3.7-6.4%, Decoder fn=4.0 10.0% (8/13), fn=2.5 11.5% (8/13) | ✅ |
+| H5 IoU ≥ 0.70 | GNN 0.904 (13/13), **Decoder fn=2.5 0.733 (9/13)**, hand-crafted (5/13) | ✅ |
+| **H6 Dynamic A* FED ≥ 30%↓** | **next session** | **🔜** |
+
+### 2.4 H6-prep verifications (2026-05-14 evening)
+
+| Check | Result | Detail |
+|---|---|---|
+| **Multi-t₀ robustness** (Step 1) | ✅ | t₀ ∈ [90, 210]s: IoU 0.726-0.736, FNR 9.9-14.2%. Cold-start t₀=60s fail (design boundary). 재학습 불필요. |
+| **EnsembleDecoderRiskMap** (Step 2) | ✅ | 9/9 self-tests pass. `from_scenario(...)` end-to-end factory ready. |
+| **H1 inference latency** (Step 3) | ✅ | GNN 0.83ms, Decoder 6.25ms, Full L4h pipeline 456ms = **3,028× faster** than FDS (23min). |
+| **5-fold CV overfit** (Step 4) | ✅ | Mean train-OOD gap **-0.003** (std 0.025), OOD IoU std 0.008 across folds. No overfit. |
 
 ---
 
 ## 3. 학습된 모델 인덱스 (모두 git 추적)
 
-| 모델 | 경로 | Size | Mean IoU (13 OOD) |
-|---|---|---|---|
-| ConvLSTM (full input) | `checkpoints/conv_lstm/best.pt` | 1.4 MB | 0.92 (L2 ideal) |
-| FNO no-PI (full input) | `checkpoints/fno_no_pi/best.pt` | 41 MB | 0.82 (L2) |
-| FNO PI (full input) | `checkpoints/fno_pi/best.pt` | 41 MB | 0.89 (L2) |
-| **Sparse ConvLSTM v3 (5-ch)** | `checkpoints/conv_lstm_sparse_v3/best.pt` | 1.4 MB | **0.581** (L4e) |
-| **Sparse FNO v3 (6-ch + sensor_indicator)** | `checkpoints/fno_sparse_v3/best.pt` | 14 MB | **0.525** (L4e') |
-| **Tier 1 GNN v3** | `checkpoints/tier1_gnn_v3/best.pt` | 53 KB | **0.904** (L4f) |
+| 모델 | 경로 | Size | Mean IoU (13 OOD) | FNR |
+|---|---|---|---|---|
+| ConvLSTM (full input) | `checkpoints/conv_lstm/best.pt` | 1.4 MB | 0.92 (L2 ideal) | — |
+| FNO no-PI (full input) | `checkpoints/fno_no_pi/best.pt` | 41 MB | 0.82 (L2) | — |
+| FNO PI (full input) | `checkpoints/fno_pi/best.pt` | 41 MB | 0.89 (L2) | — |
+| **Sparse ConvLSTM v3 (5-ch)** | `checkpoints/conv_lstm_sparse_v3/best.pt` | 1.4 MB | **0.581** (L4e) | 23.0% |
+| **Sparse FNO v3 (6-ch + sensor_indicator)** | `checkpoints/fno_sparse_v3/best.pt` | 14 MB | **0.525** (L4e') | 10.4% |
+| **Tier 1 GNN v3** | `checkpoints/tier1_gnn_v3/best.pt` | 53 KB | **0.904** (L4f per-node) | 4.6% |
+| **L4h Learned Decoder fn=2.5 ★** | `checkpoints/ensemble_decoder/best.pt` | 12 KB | **0.733** (paper default) | **11.5%** |
+| L4h Learned Decoder fn=1.0 (BCE) | `checkpoints/ensemble_decoder_fn10/best.pt` | 12 KB | 0.727 | 14.9% |
+| L4h Learned Decoder fn=2.5 | `checkpoints/ensemble_decoder_fn25/best.pt` | 12 KB | 0.733 | 11.5% |
+| **L4h Learned Decoder fn=4.0 (safety)** | `checkpoints/ensemble_decoder_fn40/best.pt` | 12 KB | 0.718 | **10.0%** ✅H4 |
 
 ---
 
@@ -167,23 +184,34 @@
 
 ### 7.1 H6 검증 — Path Planning + EXP-PATH-001
 
-**미구현 모듈**:
-1. `src/tier1/tier1_risk_map.py` — `Tier1RiskMap(RiskMap)` 클래스
-   - `query(xyz, t)`: 가장 가까운 sensor node → GNN pred danger
-   - 또는 ensemble 의 cell-level 출력 query
-2. `src/path_planning/edge_weights.py` — edge weight = α·base_time + β·integrated_risk
-3. `src/path_planning/planners.py` — Dijkstra / StaticAvoidance / **DynamicPredictive**
-4. `src/path_planning/evacuation_sim.py` — `EvacuationSimulator.simulate(planner, risk_map_truth, start_xyz, graph)`
-5. `experiments/exp_path_001.py` — 3 scenarios × 3 planners × 8 starts = 72 trials
+**구현 완료** (H6-prep, commits 5fe5c03..546c9cd):
+- ✅ `src/tier1/tier1_risk_map.py` — Per-node `Tier1RiskMap` (α option, IoU 0.904)
+- ✅ `src/tier1/ensemble_risk_map.py` — Cell-level `EnsembleDecoderRiskMap` (β/γ options, IoU 0.733/0.718)
+- ✅ Multi-t₀ robustness 검증
+- ✅ H1 latency 검증 (3,028× speedup)
+- ✅ 5-fold CV overfit 검증
 
-**목표**: Dynamic A* cumulative FED ≤ 0.7 × Dijkstra FED (30%↓)
+**RiskMap source options** (D-029 — H6 ablation 으로 비교):
+| Option | Class | Source | IoU | FNR | 용도 |
+|---|---|---|---|---|---|
+| α | `Tier1RiskMap` | Per-node GNN nearest-node | 0.904 | 4.6% | per-node strength, coarse cell res |
+| β ★ | `EnsembleDecoderRiskMap` (fn=2.5) | Cell-level decoder | 0.733 | 11.5% | paper headline |
+| γ | `EnsembleDecoderRiskMap` (fn=4.0) | Cell-level decoder | 0.718 | 10.0% | safety-friendly, H4 pass |
+| oracle | `StaticRiskMap.from_fds_dir(...)` | FDS truth | 1.0 | 0% | fairness baseline |
+
+**미구현 모듈** (next session):
+1. `src/path_planning/edge_weights.py` — edge weight = α·base_time + β·integrated_risk
+2. `src/path_planning/planners.py` — Dijkstra / StaticAvoidance / **DynamicPredictive**
+3. `src/path_planning/evacuation_sim.py` — `EvacuationSimulator.simulate(planner, risk_map_truth, start_xyz, graph)`
+4. `experiments/exp_path_001.py` — 3 scenarios × 3 planners × 4 RiskMaps × 8 starts = ~288 trials
+
+**목표**: Dynamic A* cumulative FED ≤ 0.7 × Dijkstra FED (30%↓ ✅ H6)
 
 **예상 시간**: 5-7시간 (Path planning 모듈 + EXP-PATH-001).
 
 ### 7.2 보조 작업 (선택)
 
-- **B1 Pre-interpolated FNO**: geodesic IDW 보간을 학습 input 으로 사용 → FNO 잠재력 활용. RunPod ~3시간.
-- **3-way ensemble visualization**: 6-row figure 에 ensemble row 추가
+- **B1 Pre-interpolated FNO**: geodesic IDW 보간을 학습 input 으로 사용. RunPod ~3시간.
 - **PyBullet 통합 (Week 12)**: `docs/pybullet_integration_spec.md` 외주
 
 ---
@@ -229,7 +257,18 @@ c97bfec  L-013 fix: re-sparsify → IoU 0.581 (3.2×)
 6cb7663  5-model comparison figure
 a644b18  Sparse FNO scripts (6-ch sensor indicator)
 5f448ee  Sparse FNO v3 (IoU 0.525, FNR 10.4%)
-(이번)   3-way ensemble + geodesic projection (IoU 0.618-0.625, FNR 3.7-5.1%)
+cd2c07e  Geodesic node→cell projection (IoU 0.618 / FNR 5.1%)
+44bef43  Compact-resistant snapshot + D-025/D-026/D-027
+a6f1408  Tier 1 GNN alone (per-node) + 8-row cell comparison
+ce24fda  Fix mask-out solid cells in 8-row figure
+07334a8  Step 1 ablation: mask-aware k-NN negative (-0.005 IoU)
+cc50777  ★ L4h Learned Decoder breakthrough (IoU 0.733, +0.115 over hand-crafted)
+e922ba9  Decoder comparison figures (Pareto + per-scenario + fn-sweep)
+─── H6 readiness commits ───────────────────────────────────────
+5fe5c03  Multi-t₀ robustness (decoder stable on t₀ ∈ [90, 210]s)
+d707e26  EnsembleDecoderRiskMap (β cell-level adapter, 9/9 self-tests)
+c29049c  H1 latency verified (3,028× full pipeline) + L1-L4h staircase
+546c9cd  5-fold CV (gap -0.003) + REPRODUCE.md
 ```
 
 ---

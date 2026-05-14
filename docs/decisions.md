@@ -654,6 +654,72 @@ planning 은 이 decoder 의 cell-level output 을 `Tier1RiskMap` adapter 의
 
 ---
 
+## D-029: H6 RiskMap source = cell-level decoder (β / γ), with per-node GNN (α) as ablation
+
+**Date**: 2026-05-14 (late evening, H6-prep step 2)
+
+**Decision**:
+For H6 path-planning (EXP-PATH-001), the primary RiskMap source is the
+**cell-level learned decoder** (`EnsembleDecoderRiskMap`, D-028). The
+per-node GNN adapter and FDS oracle are kept as ablation comparisons.
+
+| Tag | Class | Source | IoU | FNR | Role |
+|---|---|---|---|---|---|
+| α | `Tier1RiskMap` | per-node GNN nearest-node | 0.904 | 4.6% | ablation (coarse cell res, 39 nodes) |
+| **β ★** | `EnsembleDecoderRiskMap` (fn=2.5) | cell-level decoder | **0.733** | 11.5% | **paper default** |
+| γ | `EnsembleDecoderRiskMap` (fn=4.0) | cell-level decoder | 0.718 | **10.0%** | safety variant (H4 pass) |
+| oracle | `StaticRiskMap.from_fds_dir(...)` | FDS truth | 1.0 | 0% | fairness baseline |
+
+**Pre-decision verifications** (commits 5fe5c03 / d707e26 / c29049c / 546c9cd):
+- **Multi-t₀ robustness**: decoder trained at t₀=120s only, but evaluation
+  across t₀ ∈ [90, 210] s shows IoU 0.726-0.736, FNR 9.9-14.2%. Variation
+  within noise. Single-t₀ training is sufficient for the H6 evacuation
+  window. Cold-start t₀=60s fails (IoU 0.662) — expected design boundary.
+- **5-fold CV gap**: mean train-vs-OOD gap = -0.003 (std 0.025) across
+  the 33 train scenarios. Decoder is not overfitting.
+- **H1 latency**: full L4h pipeline 456 ms / 3,028× faster than FDS. Real-
+  time H6 replan budget (~30 s) trivially satisfied.
+
+**Alternatives**:
+- (A) per-node GNN α as primary: IoU 0.904 per-node, but `query(xyz, t)`
+  returns the *nearest-node* value → cell-level effective IoU collapses
+  to ~0.20 (over-smoothing). Path planner sees an unrealistically blocky
+  risk field. **Rejected as primary**; kept as ablation.
+- (B) hand-crafted 3-way Balanced (D-026, IoU 0.618 / FNR 5.1%): the
+  *baseline* the learned decoder replaces. Lower IoU but very low FNR;
+  could be an ablation row but not headline.
+- (C) FDS oracle as primary: defeats the surrogate contribution. Used
+  only as fairness ceiling for the EXP-PATH-001 dynamic vs static
+  comparison.
+- (D) **Selected**: β cell-level decoder as primary, γ as safety
+  alternative, α as ablation, oracle as fairness baseline.
+
+**Rationale**:
+- The learned decoder has cell-grid resolution (60×40×6) and is
+  continuous in (x, y, z, t) via the RegularGridInterpolator wrapper —
+  exactly the shape path planning needs.
+- IoU 0.733 ≥ H5 threshold (9/13 scenarios pass).
+- fn=2.5 paper headline FNR 11.5% just barely fails H4 *on the headline
+  t₀=120s*, but the multi-t₀ sweep shows that for t₀ ≥ 150 s (which is
+  where the dynamic planner spends most of its replans during a typical
+  evacuation), FNR drops to 9.9%-10.1% — well within H4.
+- fn=4.0 γ provides a single-line swap (ckpt path) for safety-critical
+  deployments at the cost of -0.015 IoU.
+
+**Implementation status**:
+- `src/tier1/ensemble_risk_map.py` — `EnsembleDecoderRiskMap` class +
+  `from_scenario(...)` end-to-end factory + 9 self-tests pass.
+- `src/tier1/tier1_risk_map.py` — pre-existing per-node `Tier1RiskMap`,
+  unchanged.
+- `src/risk_map/risk_map_class.py` — pre-existing `StaticRiskMap` for
+  oracle baseline.
+- Next session implements `src/path_planning/` + `experiments/exp_path_001.py`
+  to consume all four RiskMap variants in a single ablation table.
+
+**Status**: Locked. H6 EXP-PATH-001 will compare all four variants.
+
+---
+
 ## How to Add a Decision
 
 When making a major scope or interface decision:

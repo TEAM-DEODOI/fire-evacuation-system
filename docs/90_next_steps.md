@@ -2,8 +2,9 @@
 
 > 잔여 작업, 우선순위, 새 세션 시작 시 진행 방법.
 >
-> **Last updated**: 2026-05-14 (compact 직전).
-> **새 세션 진입 시**: 이 파일 + `docs/CURRENT_SESSION_STATE.md` 만 읽으면 됨.
+> **Last updated**: 2026-05-14 (H6-prep done).
+> **새 세션 진입 시**: `CLAUDE.md` (auto-load) + `docs/CURRENT_SESSION_STATE.md`
+> + 이 파일만 읽으면 됨.
 
 ---
 
@@ -11,57 +12,42 @@
 
 | # | 작업 | 시간 | 의존성 | 가치 |
 |---|---|---|---|---|
-| **★★★** | **Tier1RiskMap + Path planning + EXP-PATH-001** (H6 검증) | 5-7시간 | 없음 | Paper 헤드라인 가설 |
-| ✅ | ~~Sparse ConvLSTM~~ | — | — | 완료 (IoU 0.581 w/ re-sparsify) |
-| ✅ | ~~Sparse FNO 6-ch~~ | — | — | 완료 (IoU 0.525, FNR 10.4%) |
-| ✅ | ~~3-way ensemble + geodesic~~ | — | — | 완료 (IoU 0.618, FNR 3.7-5.1%) |
-| **★★** | Tier 1 GNN inference time 측정 (H1 정밀화) | 30분 | GNN ckpt | H1 수치 확정 |
-| ★ | 3-way ensemble visualization (6-row + ensemble row) | 1시간 | 기존 ckpt | 발표 figure |
-| ★ | PyBullet Week 12 통합 (외주) | 외부 | URDF + Tier1RiskMap | 발표용 데모 영상 |
+| **★★★** | **Path planning + EXP-PATH-001** (H6 검증) | 5-7시간 | 모든 RiskMap adapter ✅ | Paper 헤드라인 가설 |
+| ★ | PyBullet Week 12 통합 (외주) | 외부 | URDF + RiskMap | 발표용 데모 영상 |
 | ★ | 페이퍼 draft + 발표 슬라이드 | 다수 세션 | H6 결과 | 최종 deliverable |
+
+### 완료된 작업
+
+| Date | 작업 | Result | commit |
+|---|---|---|---|
+| 05-13 | Sparse ConvLSTM v3 (re-sparsify) | IoU 0.581 | c97bfec |
+| 05-13 | Sparse FNO v3 (6-ch) | IoU 0.525, FNR 10.4% | 5f448ee |
+| 05-14 | 2-way / 3-way ensemble (geodesic) | IoU 0.618, FNR 5.1% | cd2c07e |
+| 05-14 | L4h Learned Decoder | **IoU 0.733**, FNR 11.5% (paper) | cc50777 |
+| 05-14 | Decoder comparison figures (Pareto + per-scen) | — | e922ba9 |
+| 05-14 | Multi-t₀ robustness (Step 1) | IoU stable [0.726, 0.736] for t₀ ∈ [90, 210]s | 5fe5c03 |
+| 05-14 | EnsembleDecoderRiskMap (Step 2) | self-test 9/9 pass | d707e26 |
+| 05-14 | H1 inference latency (Step 3) | **3,028× faster than FDS** | c29049c |
+| 05-14 | 5-fold CV overfit (Step 4) | gap **-0.003** (no overfit) | 546c9cd |
 
 ---
 
 ## 2. ★★★ H6 검증 작업 세부 (가장 critical)
 
-### 2.1 모듈 작성
+### 2.0 이미 준비된 RiskMap 어댑터 (D-029)
 
-#### Step 1: `src/tier1/tier1_risk_map.py` (Tier1RiskMap 클래스)
+| Tag | Class | Source | IoU | FNR | 용도 |
+|---|---|---|---|---|---|
+| α | `src/tier1/tier1_risk_map.py :: Tier1RiskMap` | per-node GNN nearest-node | 0.904 | 4.6% | ablation |
+| **β ★** | `src/tier1/ensemble_risk_map.py :: EnsembleDecoderRiskMap` (fn=2.5) | cell-level decoder | **0.733** | 11.5% | **paper default** |
+| γ | `src/tier1/ensemble_risk_map.py :: EnsembleDecoderRiskMap` (fn=4.0) | cell-level decoder | 0.718 | **10.0%** | safety variant |
+| oracle | `src/risk_map/risk_map_class.py :: StaticRiskMap` | FDS truth | 1.0 | 0% | fairness baseline |
 
-```python
-from src.risk_map.risk_map_class import RiskMap
-from src.tier1.tier1_gnn import SimpleFireGNN, build_knn_adjacency
-from src.tier1.detector_positions import ALL_DETECTORS
+→ EXP-PATH-001 는 4개 RiskMap × 3 planner ablation 으로 confounder 분리.
 
-class Tier1RiskMap(RiskMap):
-    """GNN forward 결과 → RiskMap interface 어댑터.
-    
-    use case:
-        sim 시 매 30초마다 binary_sequence history 가 업데이트되면
-        그걸로 forward 한 결과를 캐싱.
-        query(xyz, t) 호출 시 가장 가까운 node 의 danger 반환.
-    """
-    
-    def __init__(
-        self,
-        gnn_model: SimpleFireGNN,
-        binary_history: torch.Tensor,    # (T_in=6, 39)
-        adj: torch.Tensor,
-        t0_seconds: float,                # binary history 끝 시각
-    ):
-        # 1) GNN forward → (39, T_out=6) pred danger
-        # 2) sensor positions 캐시
-        # 3) time mapping: t_query → step index in pred
-    
-    def query(self, xyz: np.ndarray, t: float | None = None) -> float | np.ndarray:
-        # 1) 가장 가까운 sensor node 찾기 (KD-tree 또는 brute force)
-        # 2) (t - self.t0_seconds) / 10 → step index
-        # 3) clamp + return pred[node_idx, step_idx]
-```
+### 2.1 작성할 모듈 (남은 작업)
 
-**Test**: `__main__` self-test — synthetic 입력으로 query 동작 검증.
-
-#### Step 2: `src/path_planning/edge_weights.py`
+#### Step 1: `src/path_planning/edge_weights.py`
 
 ```python
 def compute_edge_weight(
@@ -82,7 +68,7 @@ def compute_edge_weight(
 
 **Test**: 평면도 위 임의 edge 의 weight 계산 PASS.
 
-#### Step 3: `src/path_planning/planners.py`
+#### Step 2: `src/path_planning/planners.py`
 
 ```python
 class EvacuationPlanner(ABC):
@@ -100,7 +86,7 @@ class DynamicPredictivePlanner(EvacuationPlanner):
     """60s lookahead, 30s 마다 replan."""
 ```
 
-#### Step 4: `src/path_planning/evacuation_sim.py`
+#### Step 3: `src/path_planning/evacuation_sim.py`
 
 ```python
 class EvacuationSimulator:
@@ -119,24 +105,26 @@ class EvacuationSimulator:
         # reach_time, frac_in_danger, final_fed, reached_exit
 ```
 
-### 2.2 EXP-PATH-001 실행
+### 2.2 EXP-PATH-001 실행 (Step 4)
 
 ```bash
 python experiments/exp_path_001.py \
     --scenarios sim_1500kw_2m2_T05 sim_500kw_1m2_T01 sim_1000kw_1m2_T03 \
     --planners dijkstra static dynamic \
+    --risk-maps oracle decoder-fn25 decoder-fn40 tier1-gnn \
     --start-positions 8 \
     --output results/exp_path_001/
 ```
 
-**총 trial**: 3 scenarios × 3 planners × 8 starts = **72 trials**.
+**총 trial**: 3 scenarios × 3 planners × 4 risk-maps × 8 starts = **288 trials**.
 
-**측정**:
-- Mean cumulative FED per planner
-- % failed evacuations (FED > 0.3)
-- Mean reach time
+**측정** (D-022 four-metric):
+- `peak_danger`     — 경로상 최대 위험도 ∈ [0, 1]
+- `time_in_hazard_s` — 위험 영역 (danger > 0.5) 체류 시간
+- `aset_margin_s`   — ASET 안전 여유 시간
+- `fed_final`       — 누적 FED (보조)
 
-**가설 H6**: Dynamic FED < Static FED < Dijkstra FED, **Dynamic FED ≤ 0.7 × Dijkstra FED**.
+**가설 H6**: Dynamic FED < Static FED < Dijkstra FED, **Dynamic FED ≤ 0.7 × Dijkstra FED** (30%↓).
 
 ### 2.3 시각화
 
@@ -331,11 +319,21 @@ def query_ensemble(xyz, t, w_tier1=0.5, w_tier2=0.5):
 - [x] Tier 1 GNN training (12K params, IoU 0.904)
 - [x] Sparse + geodesic IDW + 3 모델 평가
 - [x] Evaluation Layer L1-L4 framework
-- [x] Paper Figure 1-6 (headline)
-- [x] Documentation 정리 (이 파일들)
-- [x] **Sparse-input ConvLSTM full training** ✅ (IoU 0.182, FNR 0% conservative bias)
-- [ ] **Tier1RiskMap + path planning + EXP-PATH-001** ← 가장 중요
-- [ ] **PyBullet Week 12 통합** (외주)
+- [x] Sparse-input ConvLSTM (IoU 0.581 with re-sparsify, D-025)
+- [x] Sparse-input FNO 6-ch (IoU 0.525, FNR 10.4%, D-025)
+- [x] Hand-crafted 3-way ensemble + geodesic (IoU 0.618, FNR 5.1%, D-026)
+- [x] **L4h Learned Decoder** (IoU **0.733** / FNR 11.5% paper, D-028)
+- [x] **L4h fn-weight ablation** (fn=1.0/2.5/4.0)
+- [x] Decoder Pareto frontier + per-scenario + sweep figures
+- [x] **Multi-t₀ robustness check** (t₀ ∈ [90, 210]s stable)
+- [x] **EnsembleDecoderRiskMap** (β/γ cell-level adapter, D-029)
+- [x] **H1 latency verified** (full L4h 3,028× faster than FDS)
+- [x] **5-fold CV** (mean gap -0.003, no overfit)
+- [x] Paper Figure 1-8 + L1-L4h staircase
+- [x] Documentation (CLAUDE.md, decisions, layer doc, results, this file)
+- [x] REPRODUCE.md command index
+- [ ] **Path planning + EXP-PATH-001** ★★★ ← 가장 중요 (5-7시간)
+- [ ] PyBullet Week 12 통합 (외주)
 - [ ] Paper draft
 - [ ] 발표 슬라이드
 - [ ] 코드 release (`v1.0-final` tag + `RELEASE.md`)

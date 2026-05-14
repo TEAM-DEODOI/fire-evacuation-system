@@ -46,6 +46,36 @@
 
 ---
 
+## 2.5 Learned Decoder L4h — Robustness verifications (H6-prep)
+
+| Verification | Method | Result | Status |
+|---|---|---|---|
+| **Multi-t₀ robustness** | Decoder trained at t₀=120s; eval on t₀ ∈ {60, 90, 120, 150, 180, 210}s | t₀ ≥ 90s: IoU 0.726-0.736 (Δ<0.011). t₀=60s cold-start fail (0.662). | ✅ (within design boundary) |
+| **5-fold CV (33 train)** | Hold out 7 train, retrain 26, eval on fold-val + 13 OOD; repeat | Mean train-OOD gap **-0.003** (std 0.025). OOD IoU std 0.008 across folds. | ✅ no overfit |
+| **H1 inference latency** | Full pipeline (GNN + 2 sparse + decoder) | **456 ms / 3,028× faster** than FDS (23 min) | ✅ H1 |
+| **Hand-engineered ceiling** (Step 1 ablation) | Mask-aware k-NN + adaptive σ on hand-crafted 3-way | IoU 0.618 → 0.611 (negative). Hand-crafted projection has hit a ceiling. | ✅ justifies learned approach |
+
+---
+
+## 2.6 Multi-t₀ robustness detail (13 OOD)
+
+Decoder trained on t₀=120s only; evaluated across t₀:
+
+| t₀ (s) | Mean IoU | Mean FNR | H5 pass | H4 pass | Note |
+|---|---|---|---|---|---|
+| 60 | 0.662 | 26.9% | 5/13 | 0/13 | cold-start (detectors not triggered) |
+| 90 | 0.732 | 14.2% | 9/13 | 5/13 | |
+| **120** (trained) | **0.733** | 11.5% | 9/13 | 8/13 | reference |
+| 150 | **0.736** ★ | **9.9%** | 9/13 | 8/13 | best — H4 pass |
+| 180 | 0.728 | 10.0% | 9/13 | 8/13 | |
+| 210 | 0.726 | 10.1% | 9/13 | 8/13 | |
+
+→ Decoder generalizes naturally across the H6 evacuation window
+([60, 240]s). Cold-start (t₀=60s) is the only failure regime, matching
+the documented design boundary (D-023: post-detector-trigger only).
+
+---
+
 ## 3. Layer 진행 다이어그램
 
 ```
