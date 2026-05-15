@@ -971,6 +971,67 @@ per-node GNN adapter and FDS oracle are kept as ablation comparisons.
 
 ---
 
+## D-030: Tier 1 GNN v4 — focal+asymmetric BCE + small-fire boost (small-fire 강화)
+
+**Date**: 2026-05-14 (late night)
+
+**Decision**:
+Train Tier 1 GNN 의 새 variant **v4** 추가. v3 (MSE) 가 small-fire (500kW × 1m²)
+train scenarios 에서 IoU 0.45-0.57 로 떨어지는 문제를 해결.
+
+| | v3 (paper-main, MSE) | **v4 (focal+asym BCE + boost)** |
+|---|---|---|
+| Loss | `nn.functional.mse_loss(pred, y)` | focal (γ=2.0) × asymmetric BCE (fn_weight=2.5) |
+| Sampling | uniform | WeightedRandomSampler, small-fire (frac_pos<0.3) ×2 |
+| Train mean IoU @ t₀=120s | 0.820 | **0.876** (+0.056) |
+| **s_029** (`sim_500kw_1m2_H03`) | 0.565 | **0.684** (+0.119) ★ |
+| s_021 worst-train | 0.450 | **0.900** (+0.450) ★ |
+| s_001 | 0.611 | **0.923** (+0.312) |
+| 13 OOD mean IoU | 0.889 | **0.901** (+0.012) |
+| **13 OOD H5 pass** | **12/13** | **13/13** ★ |
+| 13 OOD FNR | 4.5% | **4.3%** |
+| best epoch | 25 / 100 | 35 / 80 |
+| params | 12,006 | 12,006 (identical arch) |
+
+**Alternatives**:
+- (A) v3 그대로 유지 — small-fire scenario IoU 약점 paper limitation 으로 남김.
+- (B) MSE → BCE 만 (focal 없이) — moderate 효과 예상, ~+0.05 IoU.
+- (C) Focal only — class imbalance 대응 강함, but FNR 보장 약함.
+- (D) **Selected**: focal (γ=2.0) + asymmetric (fn_weight=2.5) + small-fire
+  oversampling (×2) — 모든 약점 한 번에 다루는 종합 처방. 결과적으로 train,
+  OOD, FNR 모두 동시 개선.
+
+**Rationale**:
+- v3 의 MSE loss 는 class-imbalanced node target (대부분 0=safe) 에서
+  "all-zero prediction" 으로 손쉽게 손실 작아짐 → small-fire 시나리오에서
+  conservative over-prediction 으로 수렴 (FNR 0% 인데 IoU 낮음).
+- Focal (γ=2.0) 가 hard-example (mismatch 노드) 에 가중 → 잘못 분류한 cell
+  의 gradient ↑.
+- Asymmetric BCE (fn_weight=2.5) 가 FN 방지에 추가 가중 → safety preserved.
+- Small-fire oversampling 이 학습 시 작은 fire scenarios 노출 빈도 ↑.
+- **No regression**: large-fire OOD scenarios 도 동시 개선 (or 미미 손실).
+  H6 path planning 의 RiskMap source 후보 (D-029) 의 α 옵션 (Tier1RiskMap)
+  성능이 강화됨.
+
+**Implementation**:
+- `scripts/train_tier1_gnn_v4.py` — new training entry with `focal_asymmetric_bce`
+  loss + `compute_scenario_weights` for WeightedRandomSampler.
+- `scripts/visualize_gnn_v3_vs_v4.py` — comparison figures (per-scenario bar
+  chart + s_029 6-step rollout side-by-side).
+- ckpt: `checkpoints/tier1_gnn_v4/best.pt` (12 KB, whitelisted in .gitignore).
+- v3 ckpt unchanged at `checkpoints/tier1_gnn_v3/best.pt` (paper-main backup).
+
+**Default for downstream**:
+v4 가 OOD 도 동시 개선했으므로 H6 의 α RiskMap option default 를 v4 로
+변경 권장. v3 는 paper §4 ablation row 로 유지 (loss 함수의 영향 검증).
+EnsembleDecoderRiskMap (β/γ) 의 input GNN 도 v4 사용 가능 — 다만
+decoder 가 이미 학습됐기 때문에 input 분포 변화 시 약간의 재학습 가능성
+있음 (현재는 v3 with decoder fn=2.5 가 paper main 으로 검증됨).
+
+**Status**: Implemented + verified. paper §4 의 GNN ablation row 추가 후보.
+
+---
+
 ## How to Add a Decision
 
 When making a major scope or interface decision:

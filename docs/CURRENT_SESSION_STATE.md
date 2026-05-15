@@ -120,6 +120,7 @@
 | **Sparse ConvLSTM v3 (5-ch)** | `checkpoints/conv_lstm_sparse_v3/best.pt` | 1.4 MB | **0.581** (L4e) | 23.0% |
 | **Sparse FNO v3 (6-ch + sensor_indicator)** | `checkpoints/fno_sparse_v3/best.pt` | 14 MB | **0.525** (L4e') | 10.4% |
 | **Tier 1 GNN v3** | `checkpoints/tier1_gnn_v3/best.pt` | 53 KB | **0.904** (L4f per-node) | 4.6% |
+| **Tier 1 GNN v4** (focal+asym, small-fire boost, D-030) | `checkpoints/tier1_gnn_v4/best.pt` | 53 KB | **0.901** (H5 13/13 ★) | **4.3%** |
 | **L4h Learned Decoder fn=2.5 ★** | `checkpoints/ensemble_decoder/best.pt` | 12 KB | **0.733** (paper default) | **11.5%** |
 | L4h Learned Decoder fn=1.0 (BCE) | `checkpoints/ensemble_decoder_fn10/best.pt` | 12 KB | 0.727 | 14.9% |
 | L4h Learned Decoder fn=2.5 | `checkpoints/ensemble_decoder_fn25/best.pt` | 12 KB | 0.733 | 11.5% |

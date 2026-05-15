@@ -130,6 +130,7 @@ checkpoints/**/final.pt
 !checkpoints/fno_pi/best.pt
 !checkpoints/tier1_gnn/best.pt
 !checkpoints/tier1_gnn_v3/best.pt
+!checkpoints/tier1_gnn_v4/best.pt
 !checkpoints/conv_lstm_sparse_v3/best.pt
 !checkpoints/fno_sparse_v3/best.pt
 !checkpoints/ensemble_decoder/best.pt
