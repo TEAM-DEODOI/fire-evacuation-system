@@ -21,17 +21,38 @@ errors compound into unsafe paths.
   ``FNORiskMap`` without changing the scenario_id or the rest of
   this file.
 * The Tier1 GNN forward consumes
-  ``results/detector_sequences/<fire_scenario_id>.npz`` (the first
-  ``T_in=6`` binary detection frames -> a 6-step prediction starting
-  at t=60 s).
+  ``results/detector_sequences/<fire_scenario_id>.npz`` plus the
+  ``activation_times`` array, fed through the **same encoding** as
+  ``Tier1FireDataset`` (training-eval parity, D-053-fix).
 * Replan + truth-exposure logic is identical to S2.
 * No casualty / FED metrics (M2-full / M3-full prerequisites).
+
+**D-053-fix (2026-05-15) — three issues fixed at once:**
+
+1. **Feature encoding.**  The legacy ``_binary_history_to_features``
+   used a *window-relative* trigger-time encoding
+   ``(t - first_active) / (T_in - 1)``, but the GNN was trained on
+   *absolute* activation times normalised by 300 s
+   (``act_times / T_END_SECONDS``).  We now mirror
+   :class:`~src.tier1.tier1_dataset.Tier1FireDataset` exactly.
+2. **Sliding window.**  The legacy build used the first six frames
+   ``binary_seq[:6]`` (t = 0..50 s) for every replan, so it forecast
+   t = 60..110 s once and froze.  Slow small fires (e.g. s_029) have
+   almost no triggers in t = 0..50 s, so the GNN saw nearly empty
+   input — completely off-distribution.  The new build slides the
+   window to match the current fire clock: ``history = binary_seq[
+   t0/dt - T_in : t0/dt]`` so the forecast covers ``[t0, t0+50 s]``.
+3. **No refresh.**  The legacy run loop never rebuilt ``planner_rm``,
+   so the swarm consulted a single 50 s forecast for the whole 300 s
+   sim.  The loop now refreshes ``planner_rm`` every
+   ``replan_period_s`` seconds of fire time (S4-style, D-046).
 """
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -60,6 +81,7 @@ from src.path_planning.planners import EvacuationPlanner
 from src.risk_map.risk_map_class import RiskMap
 from src.shared.constants import CELL_SIZE_M, DT_SLCF, REPLAN_PERIOD_S
 from src.tier1.detector_positions import ALL_DETECTORS
+from src.tier1.tier1_dataset import T_END_SECONDS
 from src.tier1.tier1_gnn import N_NODES, SimpleFireGNN, build_knn_adjacency
 from src.tier1.tier1_risk_map import Tier1RiskMap
 
@@ -67,70 +89,107 @@ from src.tier1.tier1_risk_map import Tier1RiskMap
 _TIER1_CKPT = Path("checkpoints/tier1_gnn_v3/best.pt")
 _DETECTOR_SEQ_DIR = Path("results/detector_sequences")
 _T_IN = 6
+_T_OUT = 6
 _F_IN = 5  # [is_det, det_time_norm, room, corridor, exit]
+
+# Valid GNN-forward fire-clock window. The training-time Tier1FireDataset
+# enumerates t_start ∈ [0, 19] (inclusive) over a 31-frame sequence with
+# T_in=T_out=6, so the earliest valid forecast t0 = T_in * dt = 60 s and
+# the latest is (31 - T_out) * dt = 250 s. Outside this window we freeze
+# planner_rm at the last successful build (S4-style behaviour, D-046).
+_TIER1_MIN_T0_S = 60.0
+_TIER1_MAX_T0_S = 250.0
 
 
 # ─── Tier 1 planner RiskMap construction ──────────────────────────────────
-def _binary_history_to_features(binary_history: np.ndarray) -> torch.Tensor:
-    """Convert a ``(T_in, N)`` binary detection slice to the GNN's
-    ``(1, N, T_in, F)`` input feature tensor.
+@dataclass(frozen=True)
+class _Tier1Artifacts:
+    """One-time loaded forward-pass inputs for a given (scenario, ckpt)."""
+    model: SimpleFireGNN
+    adj: torch.Tensor
+    binary_seq: np.ndarray          # (31, N_NODES) float32, latched 0/1
+    act_times: np.ndarray           # (N_NODES,) float32, first-trigger time (s); -1 = never
+    positions: List[Tuple[float, float, float]]
 
-    Feature layout (matches the training-time formatter in
-    ``scripts/train_tier1_gnn.py`` and the smoke in
-    ``scripts/smoke_tier1_pipeline.py``)::
 
-        [is_det, det_time_norm, room_onehot, corridor_onehot, exit_onehot]
+_TIER1_ART_CACHE: Dict[Tuple[str, str], _Tier1Artifacts] = {}
+
+
+def _binary_history_to_features(
+    binary_history: np.ndarray,
+    act_times: np.ndarray,
+) -> torch.Tensor:
+    """Convert a ``(T_in, N)`` binary history slice + ``(N,)`` activation
+    times to the GNN's ``(1, N, T_in, F=5)`` feature tensor.
+
+    Encoding **must** match :class:`~src.tier1.tier1_dataset.Tier1FireDataset`
+    (D-053-fix, 2026-05-15)::
+
+        feat[:, t, 0] = is_detected (binary[t, n])
+        feat[:, t, 1] = (act_times / T_END_SECONDS) * is_detected
+                        ─ absolute, simulation-clock-normalised trigger time
+                        ─ masked by current binary so unactivated nodes stay 0
+        feat[:, t, 2:5] = node_type_onehot  (room / corridor / exit)
+
+    The legacy implementation used a *window-relative*
+    ``(t - first_active) / (T_in - 1)`` which never matched the training
+    distribution and silently degraded every inference, especially on
+    slow small fires where the trigger times within the window are
+    nearly all zero.
     """
     t_in, n = binary_history.shape
-    assert n == N_NODES, f"expected {N_NODES} sensors, got {n}"
+    if n != N_NODES:
+        raise ValueError(f"expected {N_NODES} sensors, got {n}")
+    if act_times.shape != (N_NODES,):
+        raise ValueError(
+            f"act_times shape {act_times.shape} != ({N_NODES},)"
+        )
+
     x = torch.zeros(1, n, t_in, _F_IN)
 
     types = ["room", "corridor", "exit"]
     for i, d in enumerate(ALL_DETECTORS):
         x[0, i, :, 2 + types.index(d.node_type)] = 1.0
 
-    first_active = np.full(n, -1, dtype=np.int64)
-    for i in range(n):
-        nz = np.nonzero(binary_history[:, i])[0]
-        if len(nz):
-            first_active[i] = int(nz[0])
-
+    det_time_norm = np.where(
+        act_times >= 0,
+        np.clip(act_times / T_END_SECONDS, 0.0, 1.0),
+        0.0,
+    ).astype(np.float32)                                   # (N,)
+    binary_t = torch.from_numpy(binary_history.astype(np.float32))   # (T_in, N)
+    dtn_t = torch.from_numpy(det_time_norm)                          # (N,)
     for t in range(t_in):
-        for i in range(n):
-            if binary_history[t, i] > 0:
-                x[0, i, t, 0] = 1.0
-                if first_active[i] >= 0:
-                    x[0, i, t, 1] = (t - first_active[i]) / max(t_in - 1, 1)
+        x[0, :, t, 0] = binary_t[t]
+        x[0, :, t, 1] = dtn_t * binary_t[t]
     return x
 
 
-def _load_tier1_planner_rm(
+def _load_tier1_artefacts(
     fire_scenario_id: str,
-    fall_back: RiskMap,
-    verbose: bool = True,
     *,
-    fluid_mask: Optional[np.ndarray] = None,
-) -> RiskMap:
-    """Build a :class:`Tier1RiskMap` from the GNN + detector sequence.
+    ckpt_path: Optional[Path] = None,
+    verbose: bool = True,
+) -> Optional[_Tier1Artifacts]:
+    """Load the GNN checkpoint + detector-sequence inputs once per run.
 
-    Falls back to ``fall_back`` if any of the required artefacts are
-    missing or the forward pass fails. This is exactly the
-    "FDS-truth as proxy" S2-equivalent behaviour and produces a clear
-    warning so the caller can tell apart "S3-as-intended" from
-    "S3-degraded-to-S2".
-
-    D-050: when ``fluid_mask`` is supplied the resulting ``Tier1RiskMap``
-    uses geodesic-IDW interpolation over the navigable layer rather than
-    nearest-node Voronoi lookup, so cell-grid queries respect wall
-    geometry.
+    Cached by ``(fire_scenario_id, ckpt_path)`` so repeated calls are
+    free. Returns ``None`` if either the checkpoint or the detector
+    sequence is missing on disk, or the load fails — the caller then
+    keeps the FDS-truth fallback.
     """
-    if not _TIER1_CKPT.exists():
+    ckpt_p = Path(ckpt_path) if ckpt_path is not None else _TIER1_CKPT
+    cache_key = (fire_scenario_id, str(ckpt_p))
+    cached = _TIER1_ART_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    if not ckpt_p.exists():
         if verbose:
             print(
-                f"  [planner_rm] Tier1 checkpoint missing ({_TIER1_CKPT}); "
+                f"  [planner_rm] Tier1 checkpoint missing ({ckpt_p}); "
                 f"S3 planner reuses truth RiskMap"
             )
-        return fall_back
+        return None
 
     seq_path = _DETECTOR_SEQ_DIR / f"{fire_scenario_id}.npz"
     if not seq_path.exists():
@@ -139,64 +198,154 @@ def _load_tier1_planner_rm(
                 f"  [planner_rm] detector sequence missing ({seq_path}); "
                 f"S3 planner reuses truth RiskMap"
             )
-        return fall_back
+        return None
 
     try:
-        ckpt = torch.load(_TIER1_CKPT, weights_only=False, map_location="cpu")
+        ckpt = torch.load(ckpt_p, weights_only=False, map_location="cpu")
         cfg = ckpt.get("config", {})
+        v5_cfg = ckpt.get("v5_config", {})  # D-053 architecture fallback
+
+        def _cfg_get(key: str, default):
+            if key in cfg:
+                return cfg[key]
+            if key in v5_cfg:
+                return v5_cfg[key]
+            return default
+
         model = SimpleFireGNN(
             in_feat=_F_IN,
-            hidden=int(cfg.get("hidden", 32)),
-            n_graph_layers=int(cfg.get("n_graph_layers", 2)),
-            T_out=int(cfg.get("T_out", 6)),
+            hidden=int(_cfg_get("hidden", 32)),
+            n_graph_layers=int(_cfg_get("n_graph_layers", 2)),
+            T_out=int(_cfg_get("T_out", _T_OUT)),
         )
         model.load_state_dict(ckpt["model"])
         model.eval()
-        adj = build_knn_adjacency(k=int(cfg.get("knn_k", 4)))
+        adj = build_knn_adjacency(k=int(_cfg_get("knn_k", 4)))
 
         data = np.load(seq_path)
-        binary_seq = data["binary_sequence"]      # (31, 39)
-        history = binary_seq[:_T_IN]              # first T_in frames (t = 0..50 s)
-        if history.shape[0] < _T_IN:
-            pad = np.zeros(
-                (_T_IN - history.shape[0], N_NODES), dtype=np.float32
-            )
-            history = np.concatenate([pad, history], axis=0)
-
-        x = _binary_history_to_features(history)
-        with torch.no_grad():
-            pred = model(x, adj)  # (1, N, T_out)
-
+        binary_seq = data["binary_sequence"].astype(np.float32)   # (31, N)
+        act_times = data["activation_times"].astype(np.float32)   # (N,)
         positions = [
             (d.position[0], d.position[1], 1.5) for d in ALL_DETECTORS
         ]
-        # The first T_in frames cover t=[0, (T_in-1)*dt]; the GNN's
-        # prediction starts immediately after, at t = T_in * dt.
-        start_time = float(_T_IN * DT_SLCF)
+
+        art = _Tier1Artifacts(
+            model=model,
+            adj=adj,
+            binary_seq=binary_seq,
+            act_times=act_times,
+            positions=positions,
+        )
+        _TIER1_ART_CACHE[cache_key] = art
+        if verbose:
+            print(
+                f"  [planner_rm] Tier1 artefacts loaded "
+                f"(ckpt={ckpt_p.parent.name}, "
+                f"binary_seq={binary_seq.shape}, "
+                f"act_times={act_times.shape})"
+            )
+        return art
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            print(
+                f"  [planner_rm] artefact load failed "
+                f"({exc.__class__.__name__}: {exc}); "
+                f"S3 planner reuses truth RiskMap"
+            )
+        return None
+
+
+def _build_tier1_rm(
+    artefacts: _Tier1Artifacts,
+    t0_s: float,
+    *,
+    fluid_mask: Optional[np.ndarray] = None,
+    verbose: bool = False,
+) -> Optional[Tier1RiskMap]:
+    """Forward the GNN at fire-clock time ``t0_s`` and wrap as Tier1RiskMap.
+
+    The 6-frame history fed to the GNN is ``binary_seq[t0/dt - T_in :
+    t0/dt]``, matching the sliding window the trainer enumerated. The
+    returned RiskMap covers ``[t0, t0 + (T_out - 1) * dt]`` = 50 s.
+
+    Out-of-range ``t0_s`` (outside [60, 250] s) yields ``None`` so the
+    caller can keep the last good build instead of spam-failing every
+    replan tick.
+    """
+    try:
+        t0_frame = int(round(float(t0_s) / DT_SLCF))
+        t_start = t0_frame - _T_IN
+        n_frames = artefacts.binary_seq.shape[0]
+        if t_start < 0 or t_start + _T_IN > n_frames:
+            if verbose:
+                print(
+                    f"  [planner_rm] t0={t0_s:.0f}s OOB for sliding window "
+                    f"[{_TIER1_MIN_T0_S:.0f}, {_TIER1_MAX_T0_S:.0f}]s"
+                )
+            return None
+
+        history = artefacts.binary_seq[t_start : t_start + _T_IN]   # (T_in, N)
+        x = _binary_history_to_features(history, artefacts.act_times)
+        with torch.no_grad():
+            pred = artefacts.model(x, artefacts.adj)                # (1, N, T_out)
+
         rm = Tier1RiskMap.from_model_output(
             pred,
-            positions,
+            artefacts.positions,
             batch_index=0,
-            start_time=start_time,
+            start_time=float(t0_s),
             dt=float(DT_SLCF),
-            fluid_mask=fluid_mask,   # D-050: enables geodesic IDW
+            fluid_mask=fluid_mask,    # D-050: enables geodesic IDW
         )
         if verbose:
             mode = "geodesic-IDW" if fluid_mask is not None else "nearest-node"
+            hist_lo = t_start * DT_SLCF
+            hist_hi = (t_start + _T_IN - 1) * DT_SLCF
             print(
-                f"  [planner_rm] Tier1 GNN forward complete: "
-                f"start_time={start_time:.0f}s  t_max={rm.t_max:.0f}s  "
-                f"(history t=0..{(_T_IN - 1) * DT_SLCF:.0f}s, interp={mode})"
+                f"  [planner_rm] refresh t0={t0_s:.0f}s "
+                f"(history t={hist_lo:.0f}..{hist_hi:.0f}s, "
+                f"forecast t={t0_s:.0f}..{rm.t_max:.0f}s, "
+                f"interp={mode})"
             )
         return rm
     except Exception as exc:  # noqa: BLE001
         if verbose:
             print(
-                f"  [planner_rm] Tier1 build failed "
-                f"({exc.__class__.__name__}: {exc}); "
-                f"S3 planner reuses truth RiskMap"
+                f"  [planner_rm] forward FAILED at t0={t0_s:.0f}s "
+                f"({exc.__class__.__name__}: {exc})"
             )
+        return None
+
+
+def _load_tier1_planner_rm(
+    fire_scenario_id: str,
+    fall_back: RiskMap,
+    verbose: bool = True,
+    *,
+    fluid_mask: Optional[np.ndarray] = None,
+    ckpt_path: Optional[Path] = None,
+    t0_s: float = _TIER1_MIN_T0_S,
+) -> RiskMap:
+    """One-shot Tier1RiskMap at ``t0_s`` (default 60 s, the first valid
+    window). Returns ``fall_back`` if any artefact is missing or the
+    forward fails.
+
+    Kept as a thin wrapper around :func:`_load_tier1_artefacts` +
+    :func:`_build_tier1_rm` for backward compatibility — S4 still uses
+    this to seed its initial planner_rm before its first decoder
+    refresh. The S3 ``run()`` loop calls the two halves directly so it
+    can refresh the GNN forward every ``replan_period_s`` seconds
+    (D-053-fix).
+    """
+    art = _load_tier1_artefacts(
+        fire_scenario_id, ckpt_path=ckpt_path, verbose=verbose,
+    )
+    if art is None:
         return fall_back
+    rm = _build_tier1_rm(
+        art, t0_s=t0_s, fluid_mask=fluid_mask, verbose=verbose,
+    )
+    return rm if rm is not None else fall_back
 
 
 # ─── Local graph cache ────────────────────────────────────────────────────
@@ -276,10 +425,44 @@ def run(
         interior_mask = load_interior_mask()
         truth_rm = load_truth_risk_map(fds_dir, verbose=True)
         truth_co = load_truth_co_field(fds_dir, verbose=True)
-        planner_rm = _load_tier1_planner_rm(
-            fire_scenario_id, fall_back=truth_rm, verbose=True,
-            fluid_mask=fluid_mask,    # D-050: enable geodesic-IDW interpolation
+        # D-053 (2026-05-15): S3 swapped from tier1_gnn_v3/best.pt to v6.
+        # v6 is fine-tuned from v5 (h=48, graph_layers=3, 31K params) with
+        # s_029-targeted refinement (s029_iou=1.0, val_iou=0.873).
+        #
+        # D-053-fix (2026-05-15): load artefacts ONCE, then re-forward the
+        # GNN at the current fire clock every replan tick (S4-style).
+        # planner_rm is seeded with truth_rm so the swarm has a safe RM
+        # to consult before t_fire crosses _TIER1_MIN_T0_S (60 s).
+        tier1_ckpt_path = Path("checkpoints/tier1_gnn_v6/best.pt")
+        tier1_artefacts = _load_tier1_artefacts(
+            fire_scenario_id,
+            ckpt_path=tier1_ckpt_path,
+            verbose=True,
         )
+        planner_rm: RiskMap = truth_rm
+        last_tier1_t0: Optional[float] = None
+        tier1_n_success = 0
+        tier1_n_fail = 0
+
+        if tier1_artefacts is not None:
+            # Warm-start: forward at the earliest valid t0 that is >= the
+            # caller-supplied fire-clock offset, so the first sim tick
+            # already sees a model RM (rather than waiting until t_fire
+            # crosses 60 s).
+            initial_t0 = max(float(t_start_s), _TIER1_MIN_T0_S)
+            if initial_t0 <= _TIER1_MAX_T0_S:
+                initial_rm = _build_tier1_rm(
+                    tier1_artefacts,
+                    t0_s=initial_t0,
+                    fluid_mask=fluid_mask,
+                    verbose=True,
+                )
+                if initial_rm is not None:
+                    planner_rm = initial_rm
+                    last_tier1_t0 = initial_t0
+                    tier1_n_success += 1
+                else:
+                    tier1_n_fail += 1
         exits_xyz = exit_positions()
         agents = spawn_agents(
             scene, n_persons, seed,
@@ -291,6 +474,7 @@ def run(
         # D-040: pure risk-based weighting (see S2). S3's planner_rm is
         # the model RiskMap, so the planner consults the model only —
         # no truth CO leakage, no proxy.
+        # (D-054 FED-mode trial reverted 2026-05-15: see s2_fds_swarm.)
         planner = EvacuationPlanner(
             _building_graph(),
             config=EdgeWeightConfig(
@@ -336,6 +520,33 @@ def run(
             if t_sim >= duration_s:
                 break
             t_fire = t_sim + float(t_start_s)
+
+            # 0. Tier1 GNN refresh tick (D-053-fix). Slide the 6-frame
+            #    history to ``t_fire`` and re-forward the GNN so the
+            #    planner sees a fresh 50 s lookahead. Inside the valid
+            #    [60, 250] s window only; outside, freeze planner_rm at
+            #    the last successful build.
+            if (
+                tier1_artefacts is not None
+                and _TIER1_MIN_T0_S <= t_fire <= _TIER1_MAX_T0_S
+                and (
+                    last_tier1_t0 is None
+                    or (t_fire - last_tier1_t0) >= float(replan_period_s)
+                )
+            ):
+                first_attempt = last_tier1_t0 is None
+                new_rm = _build_tier1_rm(
+                    tier1_artefacts,
+                    t0_s=t_fire,
+                    fluid_mask=fluid_mask,
+                    verbose=first_attempt,
+                )
+                if new_rm is not None:
+                    planner_rm = new_rm
+                    last_tier1_t0 = t_fire
+                    tier1_n_success += 1
+                else:
+                    tier1_n_fail += 1
 
             # 1. Swarm advances using the MODEL RiskMap (planner_rm).
             #    D-040: risk-only planner — no CO field passed, so the
@@ -450,6 +661,12 @@ def run(
         mean_fed = float(feds.mean()) if feds.size else 0.0
         max_fed = float(feds.max()) if feds.size else 0.0
         p90_fed = float(np.percentile(feds, 90)) if feds.size else 0.0
+
+        if tier1_artefacts is not None:
+            print(
+                f"  [planner_rm] {tier1_n_success} refresh(es) ok, "
+                f"{tier1_n_fail} failed; last t0={last_tier1_t0}"
+            )
 
         return ScenarioMetrics(
             scenario_id="S3_fno_swarm",   # canonical name per CLAUDE.md

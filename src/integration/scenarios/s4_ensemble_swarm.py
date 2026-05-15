@@ -334,6 +334,7 @@ def run(
         n_actual = len(agents)
 
         # Same risk-only planner config as S3 (D-040).
+        # (D-054 FED-mode trial reverted 2026-05-15: see s2_fds_swarm.)
         planner = EvacuationPlanner(
             _building_graph(),
             config=EdgeWeightConfig(
