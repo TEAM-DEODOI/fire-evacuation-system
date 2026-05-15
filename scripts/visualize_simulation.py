@@ -28,6 +28,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
 from pathlib import Path
@@ -43,7 +44,9 @@ from src.integration.renderer import (
     render_comparison_animation,
     render_trajectories,
 )
-from src.integration.scenarios import s1_fixed_sign, s2_fds_swarm, s3_fno_swarm
+from src.integration.scenarios import (
+    s1_fixed_sign, s2_fds_swarm, s3_fno_swarm, s4_ensemble_swarm,
+)
 from src.integration.scenarios._common import load_truth_risk_map
 from src.path_planning.building_graph import load_default_fluid_mask
 
@@ -61,15 +64,15 @@ def _run_with_recorder(
     t_end_s: float,
     dt_s: float,
     **extra,
-) -> SimulationRecorder:
-    """Run one scenario with recording and return the populated recorder."""
+):
+    """Run one scenario with recording. Returns (recorder, metrics)."""
     rec = SimulationRecorder(
         scenario_id=label,
         fire_scenario_id=fire_scenario_id,
         seed=seed,
     )
     t0 = time.perf_counter()
-    runner(
+    metrics = runner(
         fire_scenario_id=fire_scenario_id,
         fds_dir=fds_dir,
         n_persons=n_persons,
@@ -88,7 +91,7 @@ def _run_with_recorder(
         f"{n_evac}/{len(rec.agent_ids())} evac  "
         f"({dt:.1f}s wall)"
     )
-    return rec
+    return rec, metrics
 
 
 def main() -> int:
@@ -116,6 +119,13 @@ def main() -> int:
             "Fire-clock offset (s). Simulation begins at this point in "
             "the fire's timeline so the smoke is already developed. "
             "Effective sim duration = t_end - t_start."
+        ),
+    )
+    parser.add_argument(
+        "--replan-period", type=float, default=None,
+        help=(
+            "Drone planner replan period (s). Default uses each "
+            "scenario's own default (REPLAN_PERIOD_S = 30 s)."
         ),
     )
     parser.add_argument(
@@ -163,28 +173,82 @@ def main() -> int:
     truth_rm = load_truth_risk_map(fds_dir, verbose=True)
 
     # ── Run 3 scenarios with recording ─────────────────────────────
-    print("\n[run] executing 3 scenarios (each with recorder=...)")
-    rec_s1 = _run_with_recorder(
+    replan_extras = (
+        {"replan_period_s": float(args.replan_period)}
+        if args.replan_period is not None else {}
+    )
+    print(
+        f"\n[run] executing 4 scenarios (each with recorder=...)"
+        f"  replan_period={'default' if not replan_extras else replan_extras['replan_period_s']}"
+    )
+    rec_s1, m_s1 = _run_with_recorder(
         "S1_fixed_sign", s1_fixed_sign.run,
         fire_scenario_id=args.fire, fds_dir=fds_dir,
         n_persons=args.n_persons, seed=args.seed,
         t_end_s=args.t_end, dt_s=args.dt,
         t_start_s=args.t_start,
     )
-    rec_s2 = _run_with_recorder(
+    rec_s2, m_s2 = _run_with_recorder(
         "S2_fds_swarm", s2_fds_swarm.run,
         fire_scenario_id=args.fire, fds_dir=fds_dir,
         n_persons=args.n_persons, seed=args.seed,
         t_end_s=args.t_end, dt_s=args.dt,
         t_start_s=args.t_start,
+        **replan_extras,
     )
-    rec_s3 = _run_with_recorder(
+    rec_s3, m_s3 = _run_with_recorder(
         "S3_fno_swarm", s3_fno_swarm.run,
         fire_scenario_id=args.fire, fds_dir=fds_dir,
         n_persons=args.n_persons, seed=args.seed,
         t_end_s=args.t_end, dt_s=args.dt,
         t_start_s=args.t_start,
+        **replan_extras,
     )
+    rec_s4, m_s4 = _run_with_recorder(
+        "S4_ensemble_swarm", s4_ensemble_swarm.run,
+        fire_scenario_id=args.fire, fds_dir=fds_dir,
+        n_persons=args.n_persons, seed=args.seed,
+        t_end_s=args.t_end, dt_s=args.dt,
+        t_start_s=args.t_start,
+        **replan_extras,
+    )
+
+    # ── Metrics table ──────────────────────────────────────────────
+    print("\n[metrics] EXP-PATH-001 5-metric summary")
+    header = (
+        f"  {'scenario':<20} {'evac %':>7} {'t_evac':>7} {'expos':>7} "
+        f"{'dead %':>7} {'FED_mean':>10} {'FED_p90':>10} {'FED_max':>10}"
+    )
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for label, m in (("S1_fixed_sign", m_s1),
+                     ("S2_fds_swarm", m_s2),
+                     ("S3_fno_swarm", m_s3),
+                     ("S4_ensemble_swarm", m_s4)):
+        evac_pct = m.evacuation_success_rate * 100.0
+        t_evac = m.mean_evacuation_time_s
+        t_str = f"{t_evac:7.2f}" if not math.isnan(t_evac) else f"{'nan':>7}"
+        print(
+            f"  {label:<20} {evac_pct:6.1f}% {t_str} "
+            f"{m.danger_zone_exposure_time_s:6.2f}s "
+            f"{m.casualty_rate*100:6.1f}% "
+            f"{m.cumulative_fed:10.5f} "
+            f"{m.p90_cumulative_fed:10.5f} "
+            f"{m.max_cumulative_fed:10.5f}"
+        )
+
+    # ── H6 verdict (FED ratios vs S1) ───────────────────────────────
+    if m_s1.cumulative_fed > 0:
+        r_s2 = m_s2.cumulative_fed / m_s1.cumulative_fed
+        r_s3 = m_s3.cumulative_fed / m_s1.cumulative_fed
+        r_s4 = m_s4.cumulative_fed / m_s1.cumulative_fed
+        print(
+            f"\n  H6 ratios (target <= 0.7 = 30% FED reduction vs S1):\n"
+            f"    S2/S1 = {r_s2:.3f}   "
+            f"S3/S1 = {r_s3:.3f}   "
+            f"S4/S1 = {r_s4:.3f}   "
+            f"H6 pass = {(r_s2 <= 0.7) and (r_s3 <= 0.7) and (r_s4 <= 0.7)}"
+        )
 
     # ── Render figures ─────────────────────────────────────────────
     render_risk = None if args.no_risk_overlay else truth_rm
@@ -204,8 +268,12 @@ def main() -> int:
         rec_s3, out_dir / "s3_trajectories.png",
         fluid_mask=fluid_mask, risk_map=render_risk, risk_at_t=risk_at_t,
     ))
+    paths.append(render_trajectories(
+        rec_s4, out_dir / "s4_trajectories.png",
+        fluid_mask=fluid_mask, risk_map=render_risk, risk_at_t=risk_at_t,
+    ))
     paths.append(render_comparison(
-        [rec_s1, rec_s2, rec_s3], out_dir / "comparison.png",
+        [rec_s1, rec_s2, rec_s3, rec_s4], out_dir / "comparison.png",
         fluid_mask=fluid_mask, risk_map=render_risk, risk_at_t=risk_at_t,
     ))
     for p in paths:
@@ -214,7 +282,8 @@ def main() -> int:
     if args.animate:
         print(f"\n[animate] writing GIFs ({args.fps} fps, may take a minute)")
         for label, rec in (
-            ("s1", rec_s1), ("s2", rec_s2), ("s3", rec_s3),
+            ("s1", rec_s1), ("s2", rec_s2),
+            ("s3", rec_s3), ("s4", rec_s4),
         ):
             t0 = time.perf_counter()
             gif = render_animation(
@@ -228,10 +297,10 @@ def main() -> int:
                 f"  wrote {gif}  ({gif.stat().st_size/1024:.0f} KB, "
                 f"{dt:.1f}s wall)"
             )
-        # 3-panel side-by-side GIF -- most informative for H6 reading.
+        # 4-panel side-by-side GIF -- most informative for H6 reading.
         t0 = time.perf_counter()
         gif = render_comparison_animation(
-            [rec_s1, rec_s2, rec_s3],
+            [rec_s1, rec_s2, rec_s3, rec_s4],
             out_dir / "comparison.gif",
             fluid_mask=fluid_mask,
             risk_map=render_risk,
