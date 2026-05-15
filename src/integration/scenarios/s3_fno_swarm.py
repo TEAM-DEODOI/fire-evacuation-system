@@ -108,6 +108,8 @@ def _load_tier1_planner_rm(
     fire_scenario_id: str,
     fall_back: RiskMap,
     verbose: bool = True,
+    *,
+    fluid_mask: Optional[np.ndarray] = None,
 ) -> RiskMap:
     """Build a :class:`Tier1RiskMap` from the GNN + detector sequence.
 
@@ -116,6 +118,11 @@ def _load_tier1_planner_rm(
     "FDS-truth as proxy" S2-equivalent behaviour and produces a clear
     warning so the caller can tell apart "S3-as-intended" from
     "S3-degraded-to-S2".
+
+    D-050: when ``fluid_mask`` is supplied the resulting ``Tier1RiskMap``
+    uses geodesic-IDW interpolation over the navigable layer rather than
+    nearest-node Voronoi lookup, so cell-grid queries respect wall
+    geometry.
     """
     if not _TIER1_CKPT.exists():
         if verbose:
@@ -172,12 +179,14 @@ def _load_tier1_planner_rm(
             batch_index=0,
             start_time=start_time,
             dt=float(DT_SLCF),
+            fluid_mask=fluid_mask,   # D-050: enables geodesic IDW
         )
         if verbose:
+            mode = "geodesic-IDW" if fluid_mask is not None else "nearest-node"
             print(
                 f"  [planner_rm] Tier1 GNN forward complete: "
                 f"start_time={start_time:.0f}s  t_max={rm.t_max:.0f}s  "
-                f"(history t=0..{(_T_IN - 1) * DT_SLCF:.0f}s)"
+                f"(history t=0..{(_T_IN - 1) * DT_SLCF:.0f}s, interp={mode})"
             )
         return rm
     except Exception as exc:  # noqa: BLE001
@@ -268,7 +277,8 @@ def run(
         truth_rm = load_truth_risk_map(fds_dir, verbose=True)
         truth_co = load_truth_co_field(fds_dir, verbose=True)
         planner_rm = _load_tier1_planner_rm(
-            fire_scenario_id, fall_back=truth_rm, verbose=True
+            fire_scenario_id, fall_back=truth_rm, verbose=True,
+            fluid_mask=fluid_mask,    # D-050: enable geodesic-IDW interpolation
         )
         exits_xyz = exit_positions()
         agents = spawn_agents(
@@ -348,23 +358,31 @@ def run(
             for agent in agents:
                 if agent.status != PersonStatus.ALIVE:
                     continue
-                target_drone = agent.scan_for_drones(swarm.drones)
-                if target_drone is not None:
-                    waypoint = np.array([
-                        target_drone.position[0],
-                        target_drone.position[1],
-                        agent.position[2],
-                    ], dtype=np.float64)
+                # D-051: priority 0 — if an exit is already within
+                # ``exit_proximity_m`` (default 1.0 m = 2 cells), ignore
+                # the GUIDING drone and walk straight in. Otherwise fall
+                # back to the original drone-follow / nearest-exit chain.
+                near_exit_wp = agent.nearest_exit_within_proximity(exits_xyz)
+                if near_exit_wp is not None:
+                    waypoint = near_exit_wp
                 else:
-                    waypoint = min(
-                        exits_xyz,
-                        key=lambda ex, _p=agent.position: float(
-                            np.linalg.norm(np.asarray(ex)[:2] - _p[:2])
-                        ),
-                    )
-                    waypoint = np.array([
-                        waypoint[0], waypoint[1], agent.position[2],
-                    ], dtype=np.float64)
+                    target_drone = agent.scan_for_drones(swarm.drones)
+                    if target_drone is not None:
+                        waypoint = np.array([
+                            target_drone.position[0],
+                            target_drone.position[1],
+                            agent.position[2],
+                        ], dtype=np.float64)
+                    else:
+                        waypoint = min(
+                            exits_xyz,
+                            key=lambda ex, _p=agent.position: float(
+                                np.linalg.norm(np.asarray(ex)[:2] - _p[:2])
+                            ),
+                        )
+                        waypoint = np.array([
+                            waypoint[0], waypoint[1], agent.position[2],
+                        ], dtype=np.float64)
                 tgt_cell = (
                     int(waypoint[0] / CELL_SIZE_M),
                     int(waypoint[1] / CELL_SIZE_M),

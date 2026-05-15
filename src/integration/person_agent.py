@@ -112,6 +112,12 @@ class PersonAgentConfig:
     """How far the agent can see a GUIDING drone (D-030). Slightly larger
     than the drone's sense_range_m so the drone can lead a 1.2 m/s person
     without breaking the chain on every tick."""
+    exit_proximity_m: float = 1.0
+    """D-051 (2026-05-14): when ANY exit is within this XY radius the
+    agent ignores its current GUIDING drone and heads straight to that
+    exit. Solves the "drone hovers around the exit" loop where the
+    occupant orbits with the drone instead of stepping into the exit
+    cell. Default 1.0 m = 2 cells at CELL_SIZE_M=0.5 m."""
     path_replan_period_s: float = 1.0
     """Cadence at which the agent re-plans its own BFS path to the
     current waypoint source (D-032, 2026-05-14). Forced replan also
@@ -564,6 +570,49 @@ class PersonAgent:
                 physicsClientId=client,
             )
         return moved
+
+    def nearest_exit_within_proximity(
+        self,
+        exits: List[np.ndarray],
+    ) -> Optional[np.ndarray]:
+        """D-051: return nearest exit within ``exit_proximity_m`` (XY) or None.
+
+        Used by S2/S3 person loops as the **top priority** in their
+        waypoint decision: if an exit is already within
+        ``config.exit_proximity_m`` (default 1.0 m = 2 cells) the agent
+        ignores its current GUIDING drone and walks straight into that
+        exit cell. This prevents the "drone hovers around the exit"
+        loop where the occupant orbits the drone instead of stepping
+        into the exit tolerance radius.
+
+        Args:
+            exits: List of ``(3,)`` exit world positions.
+
+        Returns:
+            ``(3,)`` array of the chosen exit (Z preserved from the
+            agent's current position) if any exit is within the
+            proximity radius, else ``None``. Non-ALIVE agents always
+            return ``None``.
+        """
+        if self.status != PersonStatus.ALIVE:
+            return None
+        proximity = float(self.config.exit_proximity_m)
+        proximity_sq = proximity * proximity
+        my_xy = self.position[:2]
+        best: Optional[np.ndarray] = None
+        best_d2 = proximity_sq
+        for ex in exits:
+            ex_arr = np.asarray(ex, dtype=np.float64).reshape(3)
+            dx = float(ex_arr[0] - my_xy[0])
+            dy = float(ex_arr[1] - my_xy[1])
+            d2 = dx * dx + dy * dy
+            if d2 <= best_d2:
+                best_d2 = d2
+                best = np.array(
+                    [ex_arr[0], ex_arr[1], float(self.position[2])],
+                    dtype=np.float64,
+                )
+        return best
 
     def scan_for_drones(self, drones) -> Optional[object]:
         """Find the nearest GUIDING drone within ``follow_range_m``.

@@ -216,24 +216,32 @@ def run(
             for agent in agents:
                 if agent.status != PersonStatus.ALIVE:
                     continue
-                target_drone = agent.scan_for_drones(swarm.drones)
-                if target_drone is not None:
-                    waypoint = np.array([
-                        target_drone.position[0],
-                        target_drone.position[1],
-                        agent.position[2],
-                    ], dtype=np.float64)
+                # D-051: priority 0 — if an exit is already within
+                # ``exit_proximity_m`` (default 1.0 m = 2 cells), ignore
+                # the GUIDING drone and walk straight in. Otherwise fall
+                # back to the original drone-follow / nearest-exit chain.
+                near_exit_wp = agent.nearest_exit_within_proximity(exits_xyz)
+                if near_exit_wp is not None:
+                    waypoint = near_exit_wp
                 else:
-                    # S1-equivalent fallback: nearest exit by XY Euclidean.
-                    waypoint = min(
-                        exits_xyz,
-                        key=lambda ex, _p=agent.position: float(
-                            np.linalg.norm(np.asarray(ex)[:2] - _p[:2])
-                        ),
-                    )
-                    waypoint = np.array([
-                        waypoint[0], waypoint[1], agent.position[2],
-                    ], dtype=np.float64)
+                    target_drone = agent.scan_for_drones(swarm.drones)
+                    if target_drone is not None:
+                        waypoint = np.array([
+                            target_drone.position[0],
+                            target_drone.position[1],
+                            agent.position[2],
+                        ], dtype=np.float64)
+                    else:
+                        # S1-equivalent fallback: nearest exit by XY Euclidean.
+                        waypoint = min(
+                            exits_xyz,
+                            key=lambda ex, _p=agent.position: float(
+                                np.linalg.norm(np.asarray(ex)[:2] - _p[:2])
+                            ),
+                        )
+                        waypoint = np.array([
+                            waypoint[0], waypoint[1], agent.position[2],
+                        ], dtype=np.float64)
                 tgt_cell = (
                     int(waypoint[0] / CELL_SIZE_M),
                     int(waypoint[1] / CELL_SIZE_M),

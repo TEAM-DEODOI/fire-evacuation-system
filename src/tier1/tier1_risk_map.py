@@ -7,20 +7,37 @@ node world coordinates) into the abstract :class:`RiskMap` interface so the
 A* path planner can swap between :class:`FDSRiskMap`, :class:`FNORiskMap`,
 and :class:`Tier1RiskMap` with no code changes.
 
-The design doc uses **nearest-node** lookup (not interpolation): the GNN
-predicts at coarse zone level (16-20 nodes), so smoothly interpolating
-between nodes would invent precision the model does not have. A drone at
-position ``xyz`` is assigned the danger of the closest node in the XY
-plane (Z is ignored — single floor).
+**Interpolation (D-050, 2026-05-14)**
+
+Two modes are supported:
+
+1. **Nearest-node** (default, when ``fluid_mask`` is not given) — the legacy
+   Voronoi-tessellation lookup the design doc originally specified. Cheap
+   but wall-blind: a detector in room A "leaks" risk into adjacent room B
+   if B's cells happen to be Euclidean-closer to A's detector than to any
+   detector inside B itself.
+
+2. **Geodesic IDW** (preferred for planner consumption) — when a
+   ``fluid_mask`` is supplied, the constructor precomputes a BFS from each
+   detector's snap cell over the navigable layer, giving
+   ``(N_nodes, nx, ny)`` cell-step distances. ``query`` then weights the
+   k-nearest *reachable* detectors with ``1 / d^p`` where ``d`` is the BFS
+   distance (m) — wall-blocked detectors are excluded automatically because
+   they are unreachable. The result is a smooth danger field that respects
+   building geometry.
+
+The two modes share the same query API; the planner does not need to know
+which mode is active.
 """
 from __future__ import annotations
 
-from typing import List, Optional, Sequence, Tuple, Union
+from collections import deque
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
 from src.risk_map.risk_map_class import RiskMap
-from src.shared.constants import DOMAIN_SIZE_M, DT_SLCF
+from src.shared.constants import CELL_SIZE_M, DOMAIN_SIZE_M, DT_SLCF
 
 
 class Tier1RiskMap(RiskMap):
@@ -46,6 +63,11 @@ class Tier1RiskMap(RiskMap):
         node_positions: Sequence[Tuple[float, float, float]],
         start_time: float = 0.0,
         dt: float = DT_SLCF,
+        *,
+        fluid_mask: Optional[np.ndarray] = None,
+        z_layer: int = 3,
+        k_neighbors: int = 3,
+        idw_power: float = 2.0,
     ) -> None:
         node_risks = np.asarray(node_risks, dtype=np.float32)
         node_positions_arr = np.asarray(node_positions, dtype=np.float32)
@@ -67,6 +89,10 @@ class Tier1RiskMap(RiskMap):
             )
         if dt <= 0:
             raise ValueError(f"dt must be positive, got {dt}")
+        if k_neighbors < 1:
+            raise ValueError(f"k_neighbors must be >= 1, got {k_neighbors}")
+        if idw_power <= 0:
+            raise ValueError(f"idw_power must be > 0, got {idw_power}")
 
         self.node_risks: np.ndarray = node_risks
         self.node_positions: np.ndarray = node_positions_arr
@@ -74,6 +100,18 @@ class Tier1RiskMap(RiskMap):
         self.dt: float = float(dt)
         self.t_out: int = node_risks.shape[0]
         self.t_max: float = self.start_time + (self.t_out - 1) * self.dt
+        self.z_layer: int = int(z_layer)
+        self.k_neighbors: int = int(k_neighbors)
+        self.idw_power: float = float(idw_power)
+
+        # D-050: precompute geodesic distance grids for each detector node
+        # if a fluid_mask is supplied. Otherwise fall back to nearest-node.
+        self.fluid_mask: Optional[np.ndarray] = fluid_mask
+        self._geodesic_dist_steps: Optional[np.ndarray] = None
+        if fluid_mask is not None:
+            self._geodesic_dist_steps = self._compute_geodesic_distance_grids(
+                np.asarray(fluid_mask, dtype=bool)
+            )
 
     # ─── RiskMap.query ──────────────────────────────────────────────────────
     def query(
@@ -126,13 +164,18 @@ class Tier1RiskMap(RiskMap):
 
     # ─── Internals ──────────────────────────────────────────────────────────
     def _query_single(self, xyz: np.ndarray, risks: np.ndarray) -> float:
-        """Single-point lookup: nearest XY node, with bounds check."""
+        """Single-point lookup. Uses geodesic IDW if a fluid_mask is set,
+        otherwise falls back to the legacy nearest-XY-node behaviour."""
         if not self._in_bounds(xyz):
             return 1.0
-        nearest = int(
-            np.argmin(np.linalg.norm(self.node_positions[:, :2] - xyz[:2], axis=1))
-        )
-        return float(risks[nearest])
+        if self._geodesic_dist_steps is None:
+            # Legacy nearest-node.
+            nearest = int(
+                np.argmin(np.linalg.norm(self.node_positions[:, :2] - xyz[:2], axis=1))
+            )
+            return float(risks[nearest])
+        # D-050: geodesic IDW over the fluid mask.
+        return self._geodesic_idw_single(xyz, risks)
 
     def _query_batch(self, xyz: np.ndarray, risks: np.ndarray) -> np.ndarray:
         """Batched lookup: ``xyz`` shape ``(M, 3)`` → ``(M,)`` danger array."""
@@ -150,11 +193,131 @@ class Tier1RiskMap(RiskMap):
             return out
 
         valid_xyz = xyz[in_bounds]  # (K, 3)
-        # Pairwise XY distances: (K, N_nodes)
-        diff = valid_xyz[:, None, :2] - self.node_positions[None, :, :2]
-        dists = np.linalg.norm(diff, axis=-1)
-        nearest = np.argmin(dists, axis=1)  # (K,)
-        out[in_bounds] = risks[nearest]
+
+        if self._geodesic_dist_steps is None:
+            # Legacy nearest-node, vectorised.
+            diff = valid_xyz[:, None, :2] - self.node_positions[None, :, :2]
+            dists = np.linalg.norm(diff, axis=-1)
+            nearest = np.argmin(dists, axis=1)  # (K,)
+            out[in_bounds] = risks[nearest]
+            return out
+
+        # D-050: per-point geodesic IDW. Small batches (~thousands of cells)
+        # so a Python loop here is fine; vectorising would require a sparse
+        # top-k argpartition over (K, N) which is not much faster on these
+        # sizes and complicates the OOB handling.
+        for j_local, j_global in enumerate(np.flatnonzero(in_bounds)):
+            out[j_global] = self._geodesic_idw_single(valid_xyz[j_local], risks)
+        return out
+
+    def _geodesic_idw_single(self, xyz: np.ndarray, risks: np.ndarray) -> float:
+        """k-nearest-reachable geodesic IDW for one in-bounds point."""
+        assert self._geodesic_dist_steps is not None    # caller guard
+        nx_, ny_ = self._geodesic_dist_steps.shape[1:]
+        # Map xyz -> cell index. xyz/CELL_SIZE_M maps cell-centres
+        # (0.25, 0.75, ...) to (0.5, 1.5, ...); int() truncation puts
+        # them in cells 0, 1, ... as intended.
+        ix = int(xyz[0] / CELL_SIZE_M)
+        iy = int(xyz[1] / CELL_SIZE_M)
+        if not (0 <= ix < nx_ and 0 <= iy < ny_):
+            return 1.0
+        cell_dist_steps = self._geodesic_dist_steps[:, ix, iy]  # (N,)
+        reachable = cell_dist_steps >= 0
+        if not reachable.any():
+            # Cell sits in a fluid pocket disconnected from every
+            # detector. Conservative safety default per RiskMap contract.
+            return 1.0
+        # If the query cell exactly *is* a detector's snap cell (distance
+        # 0), short-circuit: weight collapses to that one node.
+        zero_mask = reachable & (cell_dist_steps == 0)
+        if zero_mask.any():
+            # Average risk at zero-distance detectors (usually one).
+            return float(risks[zero_mask].mean())
+
+        dist_m = cell_dist_steps.astype(np.float64) * float(CELL_SIZE_M)
+        dist_m[~reachable] = np.inf
+        # Top-k smallest reachable distances.
+        k = int(min(self.k_neighbors, int(reachable.sum())))
+        # argpartition: indices of the k smallest values (not sorted).
+        idx = np.argpartition(dist_m, k - 1)[:k]
+        d_k = dist_m[idx]
+        w = 1.0 / (d_k ** self.idw_power)
+        return float((w * risks[idx].astype(np.float64)).sum() / w.sum())
+
+    def _compute_geodesic_distance_grids(
+        self, fluid_mask: np.ndarray,
+    ) -> np.ndarray:
+        """BFS from every detector's snap cell over the navigable layer.
+
+        Returns ``(N_nodes, nx, ny)`` int32 array of cell-step distances,
+        with ``-1`` for unreachable cells. Each BFS is 4-connected on
+        ``fluid_mask[:, :, z_layer]``. Detectors whose nominal world
+        position sits outside the fluid region (e.g. on a wall plane)
+        snap to the closest navigable cell via a small Chebyshev search.
+        """
+        if fluid_mask.ndim != 3:
+            raise ValueError(
+                f"fluid_mask must be 3-D (nx, ny, nz), got shape {fluid_mask.shape}"
+            )
+        nx_, ny_, nz_ = fluid_mask.shape
+        if not (0 <= self.z_layer < nz_):
+            raise ValueError(
+                f"z_layer {self.z_layer} outside fluid_mask depth {nz_}"
+            )
+        layer = fluid_mask[:, :, self.z_layer]
+        n_nodes = int(self.node_positions.shape[0])
+        out = np.full((n_nodes, nx_, ny_), -1, dtype=np.int32)
+
+        for i in range(n_nodes):
+            pos_xy = self.node_positions[i, :2]
+            ix0 = int(float(pos_xy[0]) / float(CELL_SIZE_M))
+            iy0 = int(float(pos_xy[1]) / float(CELL_SIZE_M))
+            ix0 = max(0, min(nx_ - 1, ix0))
+            iy0 = max(0, min(ny_ - 1, iy0))
+            # Snap to nearest fluid cell if the literal position lies on
+            # a wall / outside the navigable region. Small spiral search.
+            if not bool(layer[ix0, iy0]):
+                snapped: Optional[Tuple[int, int]] = None
+                for r in range(1, 9):
+                    for dx in range(-r, r + 1):
+                        for dy in range(-r, r + 1):
+                            if max(abs(dx), abs(dy)) != r:
+                                continue
+                            ii = ix0 + dx
+                            jj = iy0 + dy
+                            if not (0 <= ii < nx_ and 0 <= jj < ny_):
+                                continue
+                            if bool(layer[ii, jj]):
+                                snapped = (ii, jj)
+                                break
+                        if snapped is not None:
+                            break
+                    if snapped is not None:
+                        break
+                if snapped is None:
+                    # Detector hopelessly far from any fluid cell. Leave
+                    # this node's grid as all -1: it will be excluded from
+                    # every IDW query because no cell is reachable from it.
+                    continue
+                ix0, iy0 = snapped
+
+            # 4-connected BFS.
+            out[i, ix0, iy0] = 0
+            q: deque = deque([(ix0, iy0)])
+            while q:
+                x, y = q.popleft()
+                d0 = int(out[i, x, y])
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    nx2 = x + dx
+                    ny2 = y + dy
+                    if not (0 <= nx2 < nx_ and 0 <= ny2 < ny_):
+                        continue
+                    if out[i, nx2, ny2] != -1:
+                        continue
+                    if not bool(layer[nx2, ny2]):
+                        continue
+                    out[i, nx2, ny2] = d0 + 1
+                    q.append((nx2, ny2))
         return out
 
     def _in_bounds(self, xyz: np.ndarray) -> bool:
@@ -175,6 +338,11 @@ class Tier1RiskMap(RiskMap):
         batch_index: int = 0,
         start_time: float = 0.0,
         dt: float = DT_SLCF,
+        *,
+        fluid_mask: Optional[np.ndarray] = None,
+        z_layer: int = 3,
+        k_neighbors: int = 3,
+        idw_power: float = 2.0,
     ) -> "Tier1RiskMap":
         """Build a :class:`Tier1RiskMap` directly from a GNN forward-pass tensor.
 
@@ -189,6 +357,11 @@ class Tier1RiskMap(RiskMap):
             start_time: Wall-clock simulation time at the first prediction
                 step. Defaults to 0.0.
             dt: Step size (s). Defaults to :data:`DT_SLCF`.
+            fluid_mask: Optional ``(60, 40, 6)`` boolean. When provided the
+                map is built in geodesic-IDW mode (see class docstring).
+            z_layer: Z-slice used for BFS when ``fluid_mask`` is provided.
+            k_neighbors: Number of reachable detectors blended per query.
+            idw_power: IDW exponent.
 
         Returns:
             :class:`Tier1RiskMap` populated with the chosen sample.
@@ -214,6 +387,10 @@ class Tier1RiskMap(RiskMap):
             node_positions=node_positions,
             start_time=start_time,
             dt=dt,
+            fluid_mask=fluid_mask,
+            z_layer=z_layer,
+            k_neighbors=k_neighbors,
+            idw_power=idw_power,
         )
 
 
