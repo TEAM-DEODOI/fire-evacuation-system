@@ -143,19 +143,40 @@ def run(
         )
         n_actual = len(agents)
 
-        # Planner: risk_threshold=0.95 -- only near-saturated risk closes
-        # an edge so the planner does not pessimistically refuse paths in
-        # smoke-filled corridors.
-        # D-040 (2026-05-14): pure risk-based edge weighting.
-        # weight = base_cost · length + risk_scale · edge_risk
-        # Uses ONLY planner_rm (each scenario's own model). No CO field,
-        # no proxy. The planner minimises cumulative risk along the path.
+        # D-056 (2026-05-15): FED-DOMINANT planner for S2 only.
+        #   weight = base_cost · length + fed_scale · edge_fed
+        #          (+ risk_scale · edge_risk, disabled)
+        #
+        # On s_029 the truth CO field has max 17.7 ppm and 99.8% of
+        # cells have CO < 50 ppm. The default fed_scale=100 produced a
+        # FED contribution comparable to the risk + length terms, so
+        # A* still picked the same path as the risk-only run.
+        #
+        # User instruction (2026-05-15): "make fed_scale very high and
+        # length_term very low. I want FED minimisation even at the
+        # cost of huge detours."
+        #
+        # Numbers (TENABILITY.FED_REFERENCE = 27000 ppm·min):
+        #   For CO=17 ppm, length=0.5 m, walking=1.2 m/s:
+        #     traversal_min = 0.5/1.2/60 = 6.94e-3
+        #     edge_fed = 17 · 6.94e-3 / 27000 = 4.37e-6
+        #   So fed_scale must be HUGE to dominate even a tiny length
+        #   penalty. We pick fed_scale=1e6 so a CO-17 cell costs
+        #   1e6 · 4.37e-6 ≈ 4.4 per cell, while base_cost=0.001 makes
+        #   a length 0.5 m cell cost only 0.0005. CO=0 cells cost 0.
+        #   Net: any detour through CO=0 cells is cheaper than even a
+        #   single CO>5 ppm cell, regardless of how far out it goes.
+        #   risk_scale=0 -- pure FED objective; ignore T/V channels.
+        #
+        # S3/S4 are NOT changed.
         planner = EvacuationPlanner(
             _building_graph(),
             config=EdgeWeightConfig(
-                base_cost=1.0,
-                risk_scale=10.0,
-                risk_threshold=1.0,  # no hard cutoff
+                base_cost=0.001,
+                fed_scale=1_000_000.0,
+                walking_speed_mps=1.2,
+                risk_scale=0.0,
+                risk_threshold=1.0,
                 n_samples=5,
             ),
             heuristic="euclidean",
@@ -197,7 +218,9 @@ def run(
             t_fire = t_sim + float(t_start_s)
 
             # ── 1. Advance the swarm (search / acquire / guide).
-            #      D-040: risk-only planner — no co_field passed.
+            #      D-056: FED-aware planner — pass truth_co so the A*
+            #      edge weight is the predicted cumulative FED of
+            #      crossing the path (plus a small length + risk term).
             swarm.update(
                 t=t_fire,
                 dt_s=float(dt_s),
@@ -206,6 +229,7 @@ def run(
                 planner=planner,
                 interior_mask=interior_mask,
                 exits=exits_xyz,
+                co_field=truth_co,
             )
 
             # ── 2. Each ALIVE person scans for a visible GUIDING drone
