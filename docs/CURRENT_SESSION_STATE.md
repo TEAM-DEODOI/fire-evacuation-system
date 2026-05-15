@@ -121,7 +121,8 @@
 | **Sparse FNO v3 (6-ch + sensor_indicator)** | `checkpoints/fno_sparse_v3/best.pt` | 14 MB | **0.525** (L4e') | 10.4% |
 | **Tier 1 GNN v3** | `checkpoints/tier1_gnn_v3/best.pt` | 53 KB | **0.904** (L4f per-node) | 4.6% |
 | **Tier 1 GNN v4** (focal+asym, small-fire boost, D-030) | `checkpoints/tier1_gnn_v4/best.pt` | 53 KB | **0.901** (H5 13/13) | **4.3%** |
-| **Tier 1 GNN v5 ★** (v4 + Tversky + wider/deeper, D-031) | `checkpoints/tier1_gnn_v5/best.pt` | 134 KB (31K params) | **0.920** (H5 13/13, **s_029 IoU 0.812**) | 4.5% |
+| **Tier 1 GNN v5** (v4 + Tversky + wider/deeper, D-031) | `checkpoints/tier1_gnn_v5/best.pt` | 134 KB (31K params) | **0.920** (H5 13/13, s_029 IoU 0.812) | 4.5% |
+| **Tier 1 GNN v6 ★** (v5 fine-tune + s_029 specialist, D-032) | `checkpoints/tier1_gnn_v6/best.pt` | 134 KB (31K params) | **0.921** (H5 13/13, **s_029 IoU 1.000**) | **3.8%** ★ |
 | **L4h Learned Decoder fn=2.5 ★** | `checkpoints/ensemble_decoder/best.pt` | 12 KB | **0.733** (paper default) | **11.5%** |
 | L4h Learned Decoder fn=1.0 (BCE) | `checkpoints/ensemble_decoder_fn10/best.pt` | 12 KB | 0.727 | 14.9% |
 | L4h Learned Decoder fn=2.5 | `checkpoints/ensemble_decoder_fn25/best.pt` | 12 KB | 0.733 | 11.5% |
